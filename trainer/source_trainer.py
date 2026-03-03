@@ -80,7 +80,7 @@ class SourceTrainer:
             split='train',
             metadata=self.metadata,
             transform=transforms.Compose(
-                [RandomGenerator(output_size=self.args.img_size, phase='train')])
+                [RandomGenerator(output_size=(self.args.img_size, self.args.img_size), phase='train')])
         )
         self.logger.info(f"Number of training slices: {len(db_train)}")
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
@@ -132,7 +132,7 @@ class SourceTrainer:
         # train
         start_time = time.time()
         for epoch in range(self.current_epoch, self.args.num_epochs):
-            self.logger.info("\n" + "-" * 60)
+            self.logger.info("-" * 60)
             self.logger.info(f"Training Epoch {epoch}/{self.args.num_epochs}")
             self.logger.info("-" * 60)
 

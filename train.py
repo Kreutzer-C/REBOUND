@@ -92,7 +92,7 @@ def set_device(gpu_ids):
         for i in range(gpu_count):
             gpu_properties = torch.cuda.get_device_properties(i)
             print(">>> Device Info:")
-            print(" " * 8 + f"GPU {i}: {gpu_properties.name} ({gpu_properties.total_memory / 1024 ** 2}MB)")
+            print(" " * 4 + f"GPU {i}: {gpu_properties.name} ({gpu_properties.total_memory / 1024 ** 2}MB)")
 
         os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(gpu_id) for gpu_id in gpu_ids)      
         return torch.device(f'cuda:{gpu_ids[0]}')
@@ -132,7 +132,9 @@ def main():
     print(f">>> Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     if args.method == 'source_pretrain':
-        pass
+        from trainer import SourceTrainer
+        trainer = SourceTrainer(args, metadata, model, device)
+        trainer.train()
     elif args.method == 'oracle':
         pass
     else:
