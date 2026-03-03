@@ -130,7 +130,7 @@ class CSANet_VolumeDataset(Dataset):
             for f in os.listdir(self.data_dir):
                 if f.startswith('img_') and f.endswith('.nii.gz'): 
                     # img_0001.nii.gz
-                    case_id = f.split('_')[1]
+                    case_id = f.split('_')[1].split('.')[0]
                     if case_id in case_ids:
                         files.append(os.path.join(self.data_dir, f))
         else:
@@ -146,7 +146,7 @@ class CSANet_VolumeDataset(Dataset):
     
     def __getitem__(self, idx):
         data_file = self.data_files[idx]
-        case_name = data_file.split('/')[-1].split('_')[1].split('.')[0]
+        case_name = data_file.split('/')[-1].split('_')[1].split('.')[0] # 0001
 
         image = sitk.ReadImage(data_file)
         image = sitk.GetArrayFromImage(image)
