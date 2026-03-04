@@ -197,11 +197,11 @@ class Evaluator:
                 )
                 self._save_nii(
                     pred_vol.astype(np.int8), case_id, save_dir,
-                    suffix="pred", ref_img_path=ref_img_path,
+                    suffix="pred", domain_name=domain_name, ref_img_path=ref_img_path,
                 )
                 self._save_nii(
                     label_vol.astype(np.int8), case_id, save_dir,
-                    suffix="label", ref_img_path=ref_img_path,
+                    suffix="label", domain_name=domain_name, ref_img_path=ref_img_path,
                 )
 
         # --- Aggregate metrics ---
@@ -334,6 +334,7 @@ class Evaluator:
         case_id: str,
         output_dir: str,
         suffix: str,
+        domain_name: str,
         ref_img_path: str = None,
     ) -> None:
         """Save a 3-D numpy volume as a ``.nii.gz`` file via SimpleITK.
@@ -373,7 +374,7 @@ class Evaluator:
         else:
             print(f"Reference image not found: '{ref_img_path}'. Saved NIfTI will lack correct origin/direction and may not overlay properly in 3D Slicer.")
 
-        out_path = os.path.join(output_dir, f"{suffix}_{case_id}.nii.gz")
+        out_path = os.path.join(output_dir, f"{domain_name}_{suffix}_{case_id}.nii.gz")
         sitk.WriteImage(img, out_path)
         print(f"Saved {out_path}")
 

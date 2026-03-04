@@ -94,6 +94,8 @@ def main():
     metadata_path = os.path.join(args.data_dir, args.dataset, 'processed', 'metadata.json')
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
+    assert args.target in metadata['domains'], f"Target domain {args.target} not found in metadata: {metadata['domains']}"
+    assert args.source in metadata['domains'], f"Source domain {args.source} not found in metadata: {metadata['domains']}"
     
     model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device)['model_state_dict'])

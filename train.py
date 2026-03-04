@@ -114,16 +114,18 @@ def main():
         args.exp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     print(f">>> Experiment: {args.exp}")
 
+    metadata_path = os.path.join(args.data_dir, args.dataset, 'processed', 'metadata.json')
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    assert args.source in metadata['domains'], f"Source domain {args.source} not found in metadata: {metadata['domains']}"
+    assert args.target in metadata['domains'], f"Target domain {args.target} not found in metadata: {metadata['domains']}"
+
     if args.result_dir is None:
         args.result_dir = os.path.join('./results', args.dataset, f"{args.source}_to_{args.target}", args.exp)
     if os.path.exists(args.result_dir):
         raise ValueError(f"Result directory already exists: {args.result_dir}, please use a different exp name or delete the existing directory.")
     os.makedirs(args.result_dir, exist_ok=True)
     print(f">>> Result directory: {args.result_dir}")
-
-    metadata_path = os.path.join(args.data_dir, args.dataset, 'processed', 'metadata.json')
-    with open(metadata_path, 'r') as f:
-        metadata = json.load(f)
 
     model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
     if torch.cuda.device_count() > 1:

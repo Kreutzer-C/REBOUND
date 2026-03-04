@@ -49,7 +49,7 @@ class SourceTrainer:
         if not self.args.disable_wandb:
             wandb.init(
                 project="REBOUND",
-                name=self.args.exp,
+                name=f"{self.args.exp}-{self.args.source[:3]}_to_{self.args.target[:3]}-{self.args.dataset[:3]}",
                 config=self.all_configs,
                 dir=self.args.result_dir,
             )
