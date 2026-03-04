@@ -5,8 +5,6 @@ import torch
 import numpy as np
 from datetime import datetime
 
-from networks.csanet_modeling import CSANet
-
 def parse_args():
     parser = argparse.ArgumentParser(description='REBOUND: REliable BOundary expansion and structural UNderstanding via Diffusion-distillation for 2.5D Source-Free Medical Image Segmentation')
 
@@ -133,7 +131,17 @@ def main():
     os.makedirs(args.result_dir, exist_ok=True)
     print(f">>> Result directory: {args.result_dir}")
 
-    model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    if args.model == 'CSANet':
+        from networks.csanet_modeling import CSANet
+        model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    elif args.model == 'CSANet_V2':
+        from networks.csanet_modeling_v2 import CSANet_V2
+        model = CSANet_V2(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    elif args.model == 'CSANet_V3':
+        from networks.csanet_modeling_v3 import CSANet_V3
+        model = CSANet_V3(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    else:
+        raise ValueError(f"Invalid model: {args.model}")
     if torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
     print(f">>> Model: {args.model}")

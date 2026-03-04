@@ -5,7 +5,6 @@ import torch
 import numpy as np
 
 from dataloaders.dataset_CSANet import CSANet_VolumeDataset
-from networks.csanet_modeling import CSANet
 from trainer.evaluator import Evaluator
 
 
@@ -103,7 +102,17 @@ def main():
     assert args.target in metadata['domains'], f"Target domain {args.target} not found in metadata: {metadata['domains']}"
     assert args.source in metadata['domains'], f"Source domain {args.source} not found in metadata: {metadata['domains']}"
     
-    model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    if args.model == 'CSANet':
+        from networks.csanet_modeling import CSANet
+        model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    elif args.model == 'CSANet_V2':
+        from networks.csanet_modeling_v2 import CSANet_V2
+        model = CSANet_V2(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    elif args.model == 'CSANet_V3':
+        from networks.csanet_modeling_v3 import CSANet_V3
+        model = CSANet_V3(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    else:
+        raise ValueError(f"Invalid model: {args.model}")
     model.load_state_dict(torch.load(args.checkpoint, map_location=device)['model_state_dict'])
     print(f">>> Model: {args.model}")
     print(f">>> Parameters: {sum(p.numel() for p in model.parameters()):,}")
