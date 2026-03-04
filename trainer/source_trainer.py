@@ -72,10 +72,8 @@ class SourceTrainer:
 
     def train(self):
         # set dataloader
-        processed_dir = os.path.join(self.args.data_dir, self.args.dataset, 'processed')
-
         db_train = CSANet_SliceDataset(
-            base_dir=processed_dir,
+            base_dir=self.args.data_dir,
             domain_name=self.args.source,
             split='train',
             metadata=self.metadata,
@@ -86,7 +84,7 @@ class SourceTrainer:
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
         self.db_val = CSANet_VolumeDataset(
-            base_dir=processed_dir,
+            base_dir=self.args.data_dir,
             domain_name=self.args.source,
             split='test',
             metadata=self.metadata,

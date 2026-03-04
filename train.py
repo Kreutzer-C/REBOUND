@@ -20,6 +20,8 @@ def parse_args():
                         help='Dataset name')
     parser.add_argument('--data_dir', type=str, default='./datasets',
                         help='Data directory')
+    parser.add_argument('--processed_dir', type=str, default='processed',
+                        help='Processed data directory')
     parser.add_argument('--source', '-src', type=str, default='BTCV',
                         help='Source domain name')
     parser.add_argument('--target', '-tgt', type=str, default='CHAOST2',
@@ -46,7 +48,7 @@ def parse_args():
                         help='Base learning rate')
     parser.add_argument('--weight_decay', '-wd', type=float, default=5e-4,
                         help='Weight decay')
-    parser.add_argument('--scheduler', type=str, default='cosine',
+    parser.add_argument('--scheduler', type=str, default='cosine_warmup',
                         choices=['step', 'cosine', 'cosine_warmup'],
                         help='Schedule type')
     parser.add_argument('--optimizer', type=str, default='AdamW',
@@ -114,7 +116,11 @@ def main():
         args.exp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     print(f">>> Experiment: {args.exp}")
 
-    metadata_path = os.path.join(args.data_dir, args.dataset, 'processed', 'metadata.json')
+    args.data_dir = os.path.join(args.data_dir, args.dataset, args.processed_dir)
+    assert os.path.exists(args.data_dir), f"Processed data directory does not exist: {args.data_dir}"
+    print(f">>> Processed data directory: {args.data_dir}")
+
+    metadata_path = os.path.join(args.data_dir, 'metadata.json')
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     assert args.source in metadata['domains'], f"Source domain {args.source} not found in metadata: {metadata['domains']}"

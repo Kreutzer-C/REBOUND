@@ -234,10 +234,7 @@ class Evaluator:
             ``{(dataset_name, case_id): (z_sp, y_sp, x_sp)}``
         """
         # both trainer and test.py will use this function, so we need to check if the logger is None
-        log_path = os.path.join(
-            self.args.data_dir, self.args.dataset,
-            "processed", "processing_log.csv",
-        )
+        log_path = os.path.join(self.args.data_dir, "processing_log.csv")
         spacing_map: dict = {}
 
         if not os.path.exists(log_path):

@@ -17,6 +17,8 @@ def parse_args():
                         help='Dataset name')
     parser.add_argument('--data_dir', type=str, default='./datasets',
                         help='Data directory')
+    parser.add_argument('--processed_dir', type=str, default='processed',
+                        help='Processed data directory')
     parser.add_argument('--source', '-src', type=str, default='BTCV',
                         help='Source domain name')
     parser.add_argument('--target', '-tgt', type=str, default='CHAOST2',
@@ -91,7 +93,11 @@ def main():
             raise ValueError(f"Experiment directory does not exist: {args.exp_dir}")
     print(f">>> Loading checkpoint: {args.checkpoint}")
 
-    metadata_path = os.path.join(args.data_dir, args.dataset, 'processed', 'metadata.json')
+    args.data_dir = os.path.join(args.data_dir, args.dataset, args.processed_dir)
+    assert os.path.exists(args.data_dir), f"Processed data directory does not exist: {args.data_dir}"
+    print(f">>> Processed data directory: {args.data_dir}")
+
+    metadata_path = os.path.join(args.data_dir, 'metadata.json')
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     assert args.target in metadata['domains'], f"Target domain {args.target} not found in metadata: {metadata['domains']}"
@@ -117,7 +123,7 @@ def main():
         device=device
         )
     db_test = CSANet_VolumeDataset(
-        base_dir=os.path.join(args.data_dir, args.dataset, 'processed'),
+        base_dir=args.data_dir,
         domain_name=args.target,
         split='test',
         metadata=metadata,
