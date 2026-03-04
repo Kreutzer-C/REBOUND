@@ -57,7 +57,7 @@ class Evaluator:
     device : torch.device
         Torch device to run inference on.
     logger : logging.Logger, optional
-        Logger instance; a default logger is created when omitted.
+        Logger instance; direct print in console when omitted.
     """
 
     def __init__(self, args, metadata, model, device, logger=None):
@@ -66,7 +66,7 @@ class Evaluator:
         self.model = model
         self.device = device
         self.num_classes = metadata["num_classes"]
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger
 
         # Pre-load per-case spacing from processing_log.csv
         self._spacing_map = self._load_spacing_map()
@@ -79,7 +79,7 @@ class Evaluator:
     def evaluate(
         self,
         db_eval,
-        log_details: bool = False,
+        show_details: bool = False,
         save_predictions: bool = False,
         save_dir: str = None,
     ) -> dict:
@@ -125,10 +125,17 @@ class Evaluator:
         domain_name = db_eval.domain_name
         split = db_eval.split
 
-        self.logger.info(
-            f"[{split}] Evaluating {len(db_eval)} volumes "
-            f"from domain '{domain_name}' ..."
-        )
+        # both trainer and test.py will reach here, so we need to check if the logger is None
+        if self.logger is not None:
+            self.logger.info(
+                f"[{split}] Evaluating {len(db_eval)} volumes "
+                f"from domain '{domain_name}' ..."
+            )
+        else:
+            print(
+                f"[{split}] Evaluating {len(db_eval)} volumes "
+                f"from domain '{domain_name}' ..."
+            )
 
         all_dice: dict[int, list] = defaultdict(list)  # class → [dice per vol]
         all_assd: dict[int, list] = defaultdict(list)  # class → [assd per vol]
@@ -170,6 +177,14 @@ class Evaluator:
             for c in range(1, self.num_classes):
                 row[f"dice_class{c}"] = dice_scores.get(c, 0.0)
                 row[f"assd_class{c}"] = case_assd.get(c, float("inf"))
+
+            # Cross-class mean for this case
+            dice_vals = [dice_scores.get(c, 0.0) for c in range(1, self.num_classes)]
+            assd_vals = [case_assd.get(c, float("inf")) for c in range(1, self.num_classes)]
+            row["dice_mean"] = float(np.mean(dice_vals)) if dice_vals else 0.0
+            finite_assd = [v for v in assd_vals if np.isfinite(v)]
+            row["assd_mean"] = float(np.mean(finite_assd)) if finite_assd else float("inf")
+
             per_case_rows.append(row)
 
             # --- Optionally save prediction / label volumes ---
@@ -192,12 +207,12 @@ class Evaluator:
         # --- Aggregate metrics ---
         metrics = self._aggregate_metrics(all_dice, all_assd)
 
-        if log_details:
-            self._log_metrics(metrics, split)
+        if show_details:
+            self._show_metrics(metrics, split)
 
         # --- Always write CSV when save_dir is provided ---
         if save_dir is not None:
-            self._save_metrics_csv(per_case_rows, metrics, save_dir, split)
+            self._save_metrics_csv(per_case_rows, metrics, save_dir, split, domain_name)
 
         return metrics
 
@@ -218,6 +233,7 @@ class Evaluator:
         dict
             ``{(dataset_name, case_id): (z_sp, y_sp, x_sp)}``
         """
+        # both trainer and test.py will use this function, so we need to check if the logger is None
         log_path = os.path.join(
             self.args.data_dir, self.args.dataset,
             "processed", "processing_log.csv",
@@ -225,10 +241,16 @@ class Evaluator:
         spacing_map: dict = {}
 
         if not os.path.exists(log_path):
-            self.logger.warning(
-                f"processing_log.csv not found at '{log_path}'. "
-                "Falling back to isotropic 1 mm spacing for all cases."
-            )
+            if self.logger is not None:
+                self.logger.warning(
+                    f"processing_log.csv not found at '{log_path}'. "
+                    "Falling back to isotropic 1 mm spacing for all cases."
+                )
+            else:
+                print(
+                    f"processing_log.csv not found at '{log_path}'. "
+                    "Falling back to isotropic 1 mm spacing for all cases."
+                )
             return spacing_map
 
         with open(log_path, newline="") as f:
@@ -242,19 +264,23 @@ class Evaluator:
                 # Store in (z, y, x) to match numpy array axis order
                 spacing_map[(domain, case_id)] = (z_sp, y_sp, x_sp)
 
-        self.logger.info(
-            f"Loaded spacing for {len(spacing_map)} cases from processing_log.csv."
-        )
+        if self.logger is not None:
+            self.logger.info(f"Loaded spacing for {len(spacing_map)} cases from processing_log.csv.")
+        else:
+            print(f"Loaded spacing for {len(spacing_map)} cases from processing_log.csv.")
         return spacing_map
 
     def _get_spacing(self, domain_name: str, case_id: str) -> tuple:
         """Return ``(z, y, x)`` spacing in mm for one case."""
+        # both trainer and test.py will use this function, so we need to check if the logger is None
         key = (domain_name, case_id)
         if key not in self._spacing_map:
-            self.logger.debug(
-                f"Spacing not found for ({domain_name}, {case_id}). "
-                "Using isotropic 1 mm."
-            )
+            if self.logger is not None:
+                self.logger.debug(
+                    f"Spacing not found for ({domain_name}, {case_id}). "
+                    "Using isotropic 1 mm.")
+            else:
+                print(f"Spacing not found for ({domain_name}, {case_id}). Using isotropic 1 mm.")
         return self._spacing_map.get(key, (1.0, 1.0, 1.0))
 
     @torch.no_grad()
@@ -334,6 +360,7 @@ class Evaluator:
             the default SimpleITK geometry (origin=0, identity direction)
             is used.
         """
+        # only test.py will use this function, so we use print() directly
         os.makedirs(output_dir, exist_ok=True)
 
         img = sitk.GetImageFromArray(volume)
@@ -344,15 +371,11 @@ class Evaluator:
             ref = sitk.ReadImage(ref_img_path)
             img.CopyInformation(ref)
         else:
-            self.logger.warning(
-                f"Reference image not found: '{ref_img_path}'. "
-                "Saved NIfTI will lack correct origin/direction and may "
-                "not overlay properly in 3D Slicer."
-            )
+            print(f"Reference image not found: '{ref_img_path}'. Saved NIfTI will lack correct origin/direction and may not overlay properly in 3D Slicer.")
 
         out_path = os.path.join(output_dir, f"{suffix}_{case_id}.nii.gz")
         sitk.WriteImage(img, out_path)
-        self.logger.debug(f"Saved {out_path}")
+        print(f"Saved {out_path}")
 
     def _aggregate_metrics(
         self,
@@ -393,9 +416,10 @@ class Evaluator:
         )
         return metrics
 
-    def _log_metrics(self, metrics: dict, split: str) -> None:
-        """Print a human-readable summary via ``self.logger``."""
-        self.logger.info(
+    def _show_metrics(self, metrics: dict, split: str) -> None:
+        """Print a human-readable summary."""
+        # only test.py will use this function, so we use print() directly
+        print(
             f"[{split}] dice_mean={metrics.get('dice_mean', 0.0):.4f} | "
             f"assd_mean={metrics.get('assd_mean', float('inf')):.4f}"
         )
@@ -405,7 +429,7 @@ class Evaluator:
             assd = metrics.get(f"assd_class{c}", float("inf"))
             lines.append(f"    Class {c:>2d}: Dice={dice:.4f}  ASSD={assd:.4f}")
         if lines:
-            self.logger.info(
+            print(
                 f"[{split}] Per-class breakdown:\n" + "\n".join(lines)
             )
 
@@ -415,10 +439,11 @@ class Evaluator:
         overall_metrics: dict,
         output_dir: str,
         split: str,
+        domain_name: str,
     ) -> None:
         """Write per-case and overall-mean metrics to a CSV file.
 
-        The CSV is saved at ``{output_dir}/metrics_{split}.csv``.  The last
+        The CSV is saved at ``{output_dir}/metrics_{split}_{domain_name}.csv``.  The last
         row is a ``MEAN`` summary row aggregated over all cases.
 
         Parameters
@@ -432,12 +457,19 @@ class Evaluator:
         split : str
             Split label used in the filename.
         """
+        # only test.py will use this function, so we use print() directly
         if not per_case_rows:
             return
 
         os.makedirs(output_dir, exist_ok=True)
-        csv_path = os.path.join(output_dir, f"metrics_{split}.csv")
-        fieldnames = list(per_case_rows[0].keys())  # ['case_id', 'dice_class1', ...]
+        csv_path = os.path.join(output_dir, f"metrics_{split}_{domain_name}.csv")
+        # fieldnames: ['case_id', 'dice_class1', 'assd_class1', ..., 'dice_mean', 'assd_mean']
+        fieldnames = list(per_case_rows[0].keys())
+
+        def _fmt(v):
+            if isinstance(v, float):
+                return f"{v:.4f}" if np.isfinite(v) else "inf"
+            return v
 
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -445,19 +477,13 @@ class Evaluator:
 
             # --- Per-case rows ---
             for row in per_case_rows:
-                formatted = {}
-                for k, v in row.items():
-                    if isinstance(v, float):
-                        formatted[k] = f"{v:.4f}" if np.isfinite(v) else "inf"
-                    else:
-                        formatted[k] = v
-                writer.writerow(formatted)
+                writer.writerow({k: _fmt(v) for k, v in row.items()})
 
-            # --- Overall MEAN row ---
+            # --- Overall MEAN row (cross-case average for every column) ---
             mean_row: dict = {"case_id": "MEAN"}
             for fn in fieldnames[1:]:
                 val = overall_metrics.get(fn, 0.0)
-                mean_row[fn] = f"{val:.4f}" if np.isfinite(val) else "inf"
+                mean_row[fn] = _fmt(val)
             writer.writerow(mean_row)
 
-        self.logger.info(f"Metrics CSV saved → {csv_path}")
+        print(f"Metrics CSV saved → {csv_path}")

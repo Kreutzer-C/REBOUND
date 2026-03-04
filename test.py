@@ -82,7 +82,7 @@ def main():
         assert args.exp_dir is not None, "Experiment directory is required if checkpoint is not provided"
         if os.path.exists(args.exp_dir):
             checkpoint_dir = os.path.join(args.exp_dir, 'checkpoints')
-            best_checkpoint = os.path.join(checkpoint_dir, 'best_model.pth')
+            best_checkpoint = os.path.join(checkpoint_dir, 'best_checkpoint.pth')
             if os.path.exists(best_checkpoint):
                 args.checkpoint = best_checkpoint
             else:
@@ -122,7 +122,7 @@ def main():
         )
     print(f">>> Number of test volumes: {len(db_test)}")
 
-    evaluator.evaluate(db_eval=db_test, log_details=True, save_predictions=args.save_predictions, save_dir=args.save_dir)
+    evaluator.evaluate(db_eval=db_test, show_details=True, save_predictions=args.save_predictions, save_dir=args.save_dir)
 
     print(f">>> Testing completed.")
 

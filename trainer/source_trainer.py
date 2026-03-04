@@ -238,7 +238,10 @@ class SourceTrainer:
 
 
     def save_checkpoint(self, is_best=False, filename=None):
-        """Save model checkpoint."""
+        """
+        Save model checkpoint.
+        (Considering no need for resume training, we comment out the optimizer and scheduler state dict saving)
+        """
         if filename is None:
             filename = f'epoch_{self.current_epoch}_dice_{self.best_metric:.4f}.pth'
         
@@ -252,13 +255,13 @@ class SourceTrainer:
             'epoch': self.current_epoch,
             'global_step': self.global_step,
             'model_state_dict': model_state,
-            'optimizer_state_dict': self.optimizer.state_dict(),
+            # 'optimizer_state_dict': self.optimizer.state_dict(),
             'best_metric': self.best_metric,
             'config': self.all_configs,
         }
         
-        if self.scheduler is not None:
-            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        # if self.scheduler is not None:
+        #     checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         
         # Save last checkpoint
         last_path = os.path.join(self.checkpoint_path, 'last_checkpoint.pth')
