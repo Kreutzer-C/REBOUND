@@ -77,7 +77,7 @@ class NLBlockND_multicross_block(nn.Module):
         self.W_v = nn.Conv2d(in_channels=self.in_channels, out_channels=self.in_channels, kernel_size=1)
 
         self.W_o = nn.Sequential(
-            nn.Conv2d(in_channels=self.in_channels, out_channels=self.in_channels, kernel_size=1),
+            nn.Conv2d(in_channels=self.in_channels, out_channels=self.in_channels, kernel_size=1, groups=self.num_heads),
             nn.BatchNorm2d(self.in_channels)
         )
 
