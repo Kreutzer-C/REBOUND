@@ -10,7 +10,6 @@ def parse_args():
 
     # Method
     parser.add_argument('--method', type=str, default='source_pretrain',
-                        choices=['source_pretrain', 'oracle'],
                         help='Training method')
     
     # Dataset
