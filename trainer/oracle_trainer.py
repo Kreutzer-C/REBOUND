@@ -16,6 +16,9 @@ from trainer.evaluator import Evaluator
 
 
 class OracleTrainer(BaseTrainer):
+    """
+    Trainer for target domain oracle training (use ground-truth labels in target domain, as upper bound)
+    """
     def __init__(self, args, metadata, model, device):
         super().__init__(args, metadata, model, device)
 

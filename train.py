@@ -152,7 +152,13 @@ def main():
         trainer = SourceTrainer(args, metadata, model, device)
         trainer.train()
     elif args.method == 'oracle':
-        pass
+        from trainer import OracleTrainer
+        trainer = OracleTrainer(args, metadata, model, device)
+        trainer.train()
+    elif args.method == 'self_train':
+        from trainer import SelfTrainer
+        trainer = SelfTrainer(args, metadata, model, device)
+        trainer.train()
     else:
         raise ValueError(f"Invalid method: {args.method}")
 
