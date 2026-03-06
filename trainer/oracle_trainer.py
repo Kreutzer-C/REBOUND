@@ -26,7 +26,10 @@ class OracleTrainer(BaseTrainer):
     def train(self):
         # load model pre-train weight
         source_checkpoint = torch.load(self.args.source_pretrain_path)
-        self.model.load_state_dict(source_checkpoint['model_state_dict'])
+        if isinstance(self.model, nn.DataParallel):
+            self.model.module.load_state_dict(source_checkpoint['model_state_dict'])
+        else:
+            self.model.load_state_dict(source_checkpoint['model_state_dict'])
         self.logger.info(f"Loaded pre-train weight from {self.args.source_pretrain_path}")
 
         # set dataloader

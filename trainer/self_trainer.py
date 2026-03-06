@@ -26,7 +26,10 @@ class SelfTrainer(BaseTrainer):
     def train(self):
         # load model pre-train weight
         source_checkpoint = torch.load(self.args.source_pretrain_path)
-        self.model.load_state_dict(source_checkpoint['model_state_dict'])
+        if isinstance(self.model, nn.DataParallel):
+            self.model.module.load_state_dict(source_checkpoint['model_state_dict'])
+        else:
+            self.model.load_state_dict(source_checkpoint['model_state_dict'])
         self.logger.info(f"Loaded pre-train weight from {self.args.source_pretrain_path}")
 
         # set dataloader
@@ -146,7 +149,7 @@ class SelfTrainer(BaseTrainer):
             outputs = self.model(prev_image_batch, image_batch, next_image_batch)
 
             # generate pseudo-labels from current model predictions.
-            pseudo_labels = torch.argmax(outputs.detach(), dim=1)  # (B, H, W)
+            pseudo_labels = torch.argmax(outputs.detach(), dim=1).long()  # (B, H, W)
 
             # compute loss using pseudo-labels as supervision
             ce_loss = self.ce_loss(outputs, pseudo_labels)
