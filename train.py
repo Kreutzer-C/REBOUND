@@ -30,7 +30,7 @@ def parse_args():
                         help='Model name')
     parser.add_argument('--model_config', type=str, default='./networks/R50_ViTB16_config.json',
                         help='Model configuration file')
-    parser.add_argument('--src_pretrain_path', type=str, default=None,
+    parser.add_argument('--source_pretrain_path', '-sp', type=str, default=None,
                         help='Source domain pretrained model path')
     
     # Training

@@ -1,7 +1,6 @@
 import time
 from tqdm import tqdm
 import wandb
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -16,20 +15,21 @@ from dataloaders.dataset_CSANet import CSANet_SliceDataset, CSANet_VolumeDataset
 from trainer.evaluator import Evaluator
 
 
-class SourceTrainer(BaseTrainer):
+class OracleTrainer(BaseTrainer):
     def __init__(self, args, metadata, model, device):
         super().__init__(args, metadata, model, device)
 
 
     def train(self):
         # load model pre-train weight
-        self.model.load_from(weights=np.load(self.model.config.pretrained_path))
-        self.logger.info(f"Loaded pre-train weight from {self.model.config.pretrained_path}")
+        source_checkpoint = torch.load(self.args.source_pretrain_path)
+        self.model.load_from(weights=source_checkpoint['model_state_dict'])
+        self.logger.info(f"Loaded pre-train weight from {self.args.source_pretrain_path}")
 
         # set dataloader
         db_train = CSANet_SliceDataset(
             base_dir=self.args.data_dir,
-            domain_name=self.args.source,
+            domain_name=self.args.target,
             split='train',
             metadata=self.metadata,
             transform=transforms.Compose(
@@ -40,7 +40,7 @@ class SourceTrainer(BaseTrainer):
 
         self.db_val = CSANet_VolumeDataset(
             base_dir=self.args.data_dir,
-            domain_name=self.args.source,
+            domain_name=self.args.target,
             split='test',
             metadata=self.metadata,
         )
