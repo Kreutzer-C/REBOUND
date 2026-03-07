@@ -158,6 +158,10 @@ def main():
         from trainer import SelfTrainer
         trainer = SelfTrainer(args, metadata, model, device)
         trainer.train()
+    elif args.method == 'tent':
+        from trainer import TentTrainer
+        trainer = TentTrainer(args, metadata, model, device)
+        trainer.train()
     else:
         raise ValueError(f"Invalid method: {args.method}")
 
