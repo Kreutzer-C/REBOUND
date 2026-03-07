@@ -68,8 +68,9 @@ class Evaluator:
         self.num_classes = metadata["num_classes"]
         self.logger = logger
 
-        # Pre-load per-case spacing from processing_log.csv
-        self._spacing_map = self._load_spacing_map()
+        # Pre-load per-case spacing and foreground z-range from processing_log.csv
+        self._spacing_map  = self._load_spacing_map()
+        self._fg_range_map = self._load_fg_range_map()
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,6 +80,7 @@ class Evaluator:
     def evaluate(
         self,
         db_eval,
+        foreground_only: bool = False,
         show_details: bool = False,
         save_predictions: bool = False,
         save_dir: str = None,
@@ -90,25 +92,23 @@ class Evaluator:
         ``{'image', 'mask', 'case_name'}`` dicts, plus ``domain_name`` and
         ``split`` attributes).
 
-        Physical voxel spacing used for ASSD is read per-case from
-        ``processing_log.csv``; isotropic 1 mm is assumed as a fallback.
-
-        When *save_dir* is given:
-
-        * Prediction and label volumes are saved as ``pred_{case_id}.nii.gz``
-          / ``label_{case_id}.nii.gz`` (only when *save_predictions* is
-          *True*).
-        * Per-case and overall average metrics are **always** written to
-          ``{save_dir}/metrics_{split}.csv``.
-
         Parameters
         ----------
         db_eval : CSANet_VolumeDataset
             Dataset instance built by the caller (trainer or test script).
+        foreground_only : bool
+            When *True*, restrict inference and metric computation to the
+            foreground z-range ``[z_start, z_end]`` read from
+            ``processing_log.csv`` for each case, and use isotropic 1 mm
+            spacing for ASSD.  This matches the evaluation protocol used
+            during preprocessing where background-only slices were discarded.
+        show_details : bool
+            Print per-class metrics to console after evaluation.
         save_predictions : bool
             Whether to save prediction/label volumes as ``.nii.gz``.
         save_dir : str, optional
             Directory for saving predictions and/or metrics CSV.
+            Required when *save_predictions* is *True*.
 
         Returns
         -------
@@ -119,23 +119,21 @@ class Evaluator:
         """
         if save_predictions:
             assert save_dir is not None, ("save_dir must be provided when save_predictions=True")
-            
+
         self.model.eval()
 
         domain_name = db_eval.domain_name
         split = db_eval.split
 
-        # both trainer and test.py will reach here, so we need to check if the logger is None
+        mode_str = "foreground-only | isotropic 1mm spacing" if foreground_only else "full-volume"
+        msg = (
+            f"[{split}] Evaluating {len(db_eval)} volumes "
+            f"from domain '{domain_name}' [{mode_str}] ..."
+        )
         if self.logger is not None:
-            self.logger.info(
-                f"[{split}] Evaluating {len(db_eval)} volumes "
-                f"from domain '{domain_name}' ..."
-            )
+            self.logger.info(msg)
         else:
-            print(
-                f"[{split}] Evaluating {len(db_eval)} volumes "
-                f"from domain '{domain_name}' ..."
-            )
+            print(msg)
 
         all_dice: dict[int, list] = defaultdict(list)  # class → [dice per vol]
         all_assd: dict[int, list] = defaultdict(list)  # class → [assd per vol]
@@ -148,11 +146,24 @@ class Evaluator:
             label_vol = sample["mask"].astype(np.int64)       # (D, H, W)
             case_id   = sample["case_name"]                   # e.g. "0001"
 
+            # --- Optionally crop to foreground z-range ---
+            if foreground_only:
+                fg_range = self._get_fg_range(domain_name, case_id)
+                if fg_range is not None:
+                    z_start, z_end = fg_range
+                    image_vol = image_vol[z_start:z_end + 1]
+                    label_vol = label_vol[z_start:z_end + 1]
+                else:
+                    print(
+                        f"[WARNING] foreground_only=True but z_start/z_end not found "
+                        f"for ({domain_name}, {case_id}). Using full volume."
+                    )
+                spacing = (1.0, 1.0, 1.0)
+            else:
+                spacing = self._get_spacing(domain_name, case_id)
+
             # --- 2.5D inference → 3-D prediction volume ---
             pred_vol = self._infer_volume(image_vol)          # (D, H, W)
-
-            # --- Per-case spacing for ASSD (z, y, x) in mm ---
-            spacing = self._get_spacing(domain_name, case_id)
 
             # --- Dice per foreground class ---
             dice_scores = compute_dice_per_class(
@@ -212,7 +223,7 @@ class Evaluator:
 
         # --- Always write CSV when save_dir is provided ---
         if save_dir is not None:
-            self._save_metrics_csv(per_case_rows, metrics, save_dir, split, domain_name)
+            self._save_metrics_csv(per_case_rows, metrics, save_dir, split, domain_name, foreground_only)
 
         return metrics
 
@@ -279,6 +290,42 @@ class Evaluator:
             else:
                 print(f"Spacing not found for ({domain_name}, {case_id}). Using isotropic 1 mm.")
         return self._spacing_map.get(key, (1.0, 1.0, 1.0))
+
+    def _load_fg_range_map(self) -> dict:
+        """Load per-case foreground z-range from ``processing_log.csv``.
+
+        Reads the ``z_start`` and ``z_end`` columns which mark the first and
+        last slice index (inclusive, within the processed volume) that contain
+        at least one foreground voxel.
+
+        Returns
+        -------
+        dict
+            ``{(dataset_name, case_id): (z_start, z_end)}``
+        """
+        log_path = os.path.join(self.args.data_dir, "processing_log.csv")
+        fg_range_map: dict = {}
+
+        if not os.path.exists(log_path):
+            return fg_range_map
+
+        with open(log_path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                domain  = row["dataset"].strip()
+                case_id = row["case_id"].strip()
+                z_start = int(row["z_start"].strip())
+                z_end   = int(row["z_end"].strip())
+                fg_range_map[(domain, case_id)] = (z_start, z_end)
+
+        return fg_range_map
+
+    def _get_fg_range(self, domain_name: str, case_id: str):
+        """Return ``(z_start, z_end)`` foreground slice range for one case.
+
+        Returns *None* if the case is not found in ``processing_log.csv``.
+        """
+        return self._fg_range_map.get((domain_name, case_id), None)
 
     @torch.no_grad()
     def _infer_volume(self, image_vol: np.ndarray) -> np.ndarray:
@@ -438,6 +485,7 @@ class Evaluator:
         output_dir: str,
         split: str,
         domain_name: str,
+        foreground_only: bool,
     ) -> None:
         """Write per-case and overall-mean metrics to a CSV file.
 
@@ -454,13 +502,15 @@ class Evaluator:
             Directory to write the CSV into (created if absent).
         split : str
             Split label used in the filename.
+        foreground_only : bool
+            Whether the evaluation was performed on foreground-only slices.
         """
         # only test.py will use this function, so we use print() directly
         if not per_case_rows:
             return
 
         os.makedirs(output_dir, exist_ok=True)
-        csv_path = os.path.join(output_dir, f"metrics_{split}_{domain_name}.csv")
+        csv_path = os.path.join(output_dir, f"metrics_{split}_{domain_name}_{'foreground' if foreground_only else ''}.csv")
         # fieldnames: ['case_id', 'dice_class1', 'assd_class1', ..., 'dice_mean', 'assd_mean']
         fieldnames = list(per_case_rows[0].keys())
 

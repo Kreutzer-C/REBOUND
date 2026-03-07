@@ -38,6 +38,8 @@ def parse_args():
     # Inference
     parser.add_argument('--img_size', type=int, default=256,
                         help='Image size')
+    parser.add_argument('--foreground_only', '-fgo', action='store_true',
+                        help='Evaluate on foreground-only slices')
 
     # Output options
     parser.add_argument('--save_predictions', action='store_true',
@@ -139,7 +141,7 @@ def main():
         )
     print(f">>> Number of test volumes: {len(db_test)}")
 
-    evaluator.evaluate(db_eval=db_test, show_details=True, save_predictions=args.save_predictions, save_dir=args.save_dir)
+    evaluator.evaluate(db_eval=db_test, foreground_only=args.foreground_only, show_details=True, save_predictions=args.save_predictions, save_dir=args.save_dir)
 
     print(f">>> Testing completed.")
 
