@@ -1,76 +1,160 @@
 """
-Evaluator for 2.5D medical image segmentation (CSANet / REBOUND).
+Evaluator for 2.5D medical image segmentation (CSANet / REBOUND) — slice-based.
 
-For each volume in a given split the *complete* 3-D volume (including
-background-only slices that were discarded during preprocessing) is loaded
-from the ``volumes/`` directory via :class:`CSANet_VolumeDataset`.  Each
-slice is then processed as a (prev, current, next) 2.5D triplet and the
-per-slice predictions are stacked into a 3-D prediction volume.  Dice and
-ASSD are computed per foreground class using the **per-case physical voxel
-spacing** read from ``processing_log.csv``.
+Design
+------
+The evaluator consumes a :class:`~dataloaders.dataset_CSANet.CSANet_SliceDataset`
+instance instead of a volume dataset.  All slices in the dataset are first
+grouped by ``case_name`` and sorted by ``slice_name`` (z-index).  For each
+case the ordered 2-D slices are fed through the model as 2.5D
+(prev, curr, next) triplets; the per-slice predictions are stacked into a
+3-D prediction volume from which Dice and ASSD are computed.
+
+Advantages over the former volume-based approach
+-------------------------------------------------
+* Works correctly with any preprocessing pipeline regardless of whether the
+  stored slice and volume spatial dimensions agree.
+* When the slice spatial size differs from ``args.img_size``, each slice is
+  bilinearly resampled to ``(img_size, img_size)`` for inference and the
+  prediction is nearest-neighbour mapped back to the original size — all
+  within :meth:`_infer_case`.
+
+Saving (no reference-image mechanism)
+--------------------------------------
+When *save_predictions* is *True*, three aligned NIfTI files are written for
+every case: **image**, **pred**, and **label**.  All three share identical
+voxel spacing (from ``processing_log.csv``), origin ``(0, 0, 0)``, and
+identity direction matrix.  They can therefore be overlaid directly in 3D
+Slicer without any alignment step and without the original source volume as a
+reference.
 
 Intended usage
 --------------
-1. Per-epoch validation inside a Trainer (``db_val`` built once in ``train()``)::
+1. Per-epoch validation inside a Trainer::
 
-       evaluator = Evaluator(args, metadata, model, device, logger=self.logger)
-       metrics = evaluator.evaluate(db_eval=db_val)
+       db_val    = CSANet_SliceDataset(
+           data_dir, target, 'test', metadata,
+           transform=…RandomGenerator_new(img_size, phase='val'),
+       )
+       # db_val is pre-loaded once at construction time
+       evaluator = Evaluator(args, metadata, model, device, db_eval=db_val, logger=self.logger)
+       # Each epoch: only inference + metric computation
+       metrics   = evaluator.evaluate()
 
 2. Standalone test evaluation (``test.py`` entry point)::
 
-       db_test = CSANet_VolumeDataset(base_dir, domain_name, split='test', metadata)
-       evaluator = Evaluator(args, metadata, model, device)
-       metrics = evaluator.evaluate(
-           db_eval=db_test,
+       db_test   = CSANet_SliceDataset(
+           data_dir, target, 'test', metadata,
+           transform=…RandomGenerator_new(img_size, phase='test'),
+       )
+       evaluator = Evaluator(args, metadata, model, device, db_eval=db_test)
+       metrics   = evaluator.evaluate(
            save_predictions=True,
            save_dir='results/preds',
        )
 """
 
 import csv
-import logging
 import os
 from collections import defaultdict
 
 import numpy as np
 import SimpleITK as sitk
-import nibabel as nib
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from utils.metrics import compute_assd, compute_dice_per_class
 
 
 class Evaluator:
-    """Volume-level evaluator for a 2.5D segmentation model.
+    """Slice-based volume-level evaluator for a 2.5D segmentation model.
+
+    All expensive preprocessing — iterating the dataset, grouping slices by
+    case, sorting, converting to numpy, stacking into label volumes, and
+    looking up per-case physical spacing — is performed **once** during
+    ``__init__``.  Subsequent calls to :meth:`evaluate` only run model
+    inference and metric computation.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Parsed command-line arguments.  Must contain at least ``data_dir``
-        and ``dataset``.
+        Must contain at least ``data_dir`` and ``img_size``.
     metadata : dict
-        Dataset metadata loaded from ``metadata.json``.  Must contain
-        ``num_classes`` and optionally ``splits``.
+        Dataset metadata.  Must contain ``num_classes``.
     model : torch.nn.Module
-        The segmentation model (e.g. CSANet).  Already moved to *device*.
+        Segmentation model already moved to *device*.
     device : torch.device
-        Torch device to run inference on.
+    db_eval : CSANet_SliceDataset
+        Slice-level dataset used for evaluation.  Pre-loaded at init time.
     logger : logging.Logger, optional
-        Logger instance; direct print in console when omitted.
+        Routes log messages; falls back to ``print`` when *None*.
     """
 
-    def __init__(self, args, metadata, model, device, logger=None):
-        self.args = args
-        self.metadata = metadata
-        self.model = model
-        self.device = device
+    def __init__(self, args, metadata, model, device, db_eval, logger=None):
+        self.args        = args
+        self.metadata    = metadata
+        self.model       = model
+        self.device      = device
         self.num_classes = metadata["num_classes"]
-        self.logger = logger
+        self.logger      = logger
 
-        # Pre-load per-case spacing and foreground z-range from processing_log.csv
-        self._spacing_map  = self._load_spacing_map()
-        self._fg_range_map = self._load_fg_range_map()
+        self._spacing_map = self._load_spacing_map()
+
+        # Domain / split info (fixed for the lifetime of this evaluator)
+        self._domain_name = db_eval.domain_name
+        self._split       = db_eval.split
+
+        # Pre-load all data once
+        self._prepare_cases(db_eval)
+
+    # ------------------------------------------------------------------
+    # One-time data preparation (called from __init__)
+    # ------------------------------------------------------------------
+
+    def _prepare_cases(self, db_eval) -> None:
+        """Load every slice from *db_eval*, group by case, and cache results.
+
+        After this method returns, the following instance attributes are
+        populated and remain constant for the lifetime of the evaluator:
+
+        ``_case_ids`` : list[str]
+            Sorted list of case identifiers.
+        ``_images_per_case`` : dict[str, list[np.ndarray]]
+            Ordered 2-D float32 slices ``(H, W)`` per case.
+        ``_label_vols`` : dict[str, np.ndarray]
+            Stacked label volume ``(D, H, W)`` int64 per case.
+        ``_image_vols`` : dict[str, np.ndarray]
+            Stacked image volume ``(D, H, W)`` float32 per case
+            (used when saving NIfTI predictions).
+        ``_real_spacings`` : dict[str, tuple]
+            Physical ``(z_sp, y_sp, x_sp)`` spacing in mm per case.
+        """
+        total_slices = len(db_eval)
+        self._log(
+            f"Pre-loading {total_slices} slices from "
+            f"'{self._domain_name}' [{self._split}] ..."
+        )
+
+        case_dict = self._group_slices_by_case(db_eval)
+
+        self._case_ids        : list              = sorted(case_dict.keys())
+        self._images_per_case : dict[str, list]   = {}
+        self._label_vols      : dict[str, np.ndarray] = {}
+        self._image_vols      : dict[str, np.ndarray] = {}
+        self._real_spacings   : dict[str, tuple]  = {}
+
+        for case_id, slices in case_dict.items():
+            images_2d = [s[1] for s in slices]
+            masks_2d  = [s[2] for s in slices]
+            self._images_per_case[case_id] = images_2d
+            self._label_vols[case_id]      = np.stack(masks_2d,  axis=0).astype(np.int64)
+            self._image_vols[case_id]      = np.stack(images_2d, axis=0).astype(np.float32)
+            self._real_spacings[case_id]   = self._get_spacing(self._domain_name, case_id)
+
+        self._log(
+            f"Ready: {len(self._case_ids)} case(s), {total_slices} slices pre-loaded."
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,93 +163,64 @@ class Evaluator:
     @torch.no_grad()
     def evaluate(
         self,
-        db_eval,
-        foreground_only: bool = False,
+        isotropic_spacing: bool = False,
         show_details: bool = False,
         save_predictions: bool = False,
         save_dir: str = None,
     ) -> dict:
-        """Run volume-level evaluation on a pre-built dataset object.
+        """Run inference and compute volume-level metrics on the cached data.
 
-        The dataset is expected to be a :class:`CSANet_VolumeDataset` instance
-        (or any object that exposes ``__len__``, ``__getitem__`` returning
-        ``{'image', 'mask', 'case_name'}`` dicts, plus ``domain_name`` and
-        ``split`` attributes).
+        All slice data was pre-loaded during ``__init__``.  Each call to
+        this method only performs model forward passes and metric computation.
 
         Parameters
         ----------
-        db_eval : CSANet_VolumeDataset
-            Dataset instance built by the caller (trainer or test script).
-        foreground_only : bool
-            When *True*, restrict inference and metric computation to the
-            foreground z-range ``[z_start, z_end]`` read from
-            ``processing_log.csv`` for each case, and use isotropic 1 mm
-            spacing for ASSD.  This matches the evaluation protocol used
-            during preprocessing where background-only slices were discarded.
+        isotropic_spacing : bool
+            When *True*, use isotropic 1 mm spacing for ASSD computation
+            and NIfTI saving, ignoring the physical spacing from
+            ``processing_log.csv``.  When *False* (default), use the
+            per-case real physical spacing.
         show_details : bool
             Print per-class metrics to console after evaluation.
         save_predictions : bool
-            Whether to save prediction/label volumes as ``.nii.gz``.
+            Save per-case **image**, **pred**, and **label** as ``.nii.gz``.
         save_dir : str, optional
-            Directory for saving predictions and/or metrics CSV.
             Required when *save_predictions* is *True*.
 
         Returns
         -------
         dict
-            Flat metrics dictionary with keys ``'dice_mean'``,
-            ``'assd_mean'``, ``'dice_class{c}'``, ``'assd_class{c}'``, …
-            Ready to pass directly to a trainer's ``_log_metrics``.
+            Flat metrics dict: ``dice_mean``, ``assd_mean``,
+            ``dice_class{c}``, ``assd_class{c}``, …
         """
         if save_predictions:
-            assert save_dir is not None, ("save_dir must be provided when save_predictions=True")
+            assert save_dir is not None, (
+                "save_dir must be provided when save_predictions=True"
+            )
 
         self.model.eval()
 
-        domain_name = db_eval.domain_name
-        split = db_eval.split
-
-        mode_str = "foreground-only | isotropic 1mm spacing" if foreground_only else "full-volume"
-        msg = (
-            f"[{split}] Evaluating {len(db_eval)} volumes "
-            f"from domain '{domain_name}' [{mode_str}] ..."
+        domain_name  = self._domain_name
+        split        = self._split
+        spacing_mode = "isotropic 1 mm" if isotropic_spacing else "real physical spacing"
+        self._log(
+            f"[{split}] Evaluating {len(self._case_ids)} case(s) "
+            f"from domain '{domain_name}' [{spacing_mode}] ..."
         )
-        if self.logger is not None:
-            self.logger.info(msg)
-        else:
-            print(msg)
 
-        all_dice: dict[int, list] = defaultdict(list)  # class → [dice per vol]
-        all_assd: dict[int, list] = defaultdict(list)  # class → [assd per vol]
+        all_dice: dict[int, list] = defaultdict(list)
+        all_assd: dict[int, list] = defaultdict(list)
         per_case_rows: list[dict] = []
 
-        for idx in tqdm(range(len(db_eval)), desc=f"Eval [{split}]", leave=False):
-            sample = db_eval[idx]
-            # CSANet_VolumeDataset yields raw numpy arrays (no transform applied)
-            image_vol = sample["image"].astype(np.float32)   # (D, H, W)
-            label_vol = sample["mask"].astype(np.int64)       # (D, H, W)
-            case_id   = sample["case_name"]                   # e.g. "0001"
+        for case_id in tqdm(self._case_ids, desc=f"Eval [{split}]", leave=False):
+            images_2d = self._images_per_case[case_id]
+            label_vol = self._label_vols[case_id]
+            spacing   = (1.0, 1.0, 1.0) if isotropic_spacing else self._real_spacings[case_id]
 
-            # --- Optionally crop to foreground z-range ---
-            if foreground_only:
-                fg_range = self._get_fg_range(domain_name, case_id)
-                if fg_range is not None:
-                    z_start, z_end = fg_range
-                    image_vol = image_vol[z_start:z_end + 1]
-                    label_vol = label_vol[z_start:z_end + 1]
-                else:
-                    print(
-                        f"[WARNING] foreground_only=True but z_start/z_end not found "
-                        f"for ({domain_name}, {case_id}). Using full volume."
-                    )
-                spacing = (1.0, 1.0, 1.0)
-            else:
-                spacing = self._get_spacing(domain_name, case_id)
+            # ── 1. 2.5-D inference ────────────────────────────────────
+            pred_vol = self._infer_case(images_2d)                       # (D, H, W)
 
-            # --- 2.5D inference → 3-D prediction volume ---
-            pred_vol = self._infer_volume(image_vol)          # (D, H, W)
-
-            # --- Dice per foreground class ---
+            # ── 2. Dice per foreground class ──────────────────────────
             dice_scores = compute_dice_per_class(
                 pred_vol, label_vol,
                 num_classes=self.num_classes,
@@ -174,7 +229,7 @@ class Evaluator:
             for c, d in dice_scores.items():
                 all_dice[c].append(d)
 
-            # --- ASSD per foreground class ---
+            # ── 3. ASSD per foreground class ──────────────────────────
             case_assd: dict[int, float] = {}
             for c in range(1, self.num_classes):
                 pred_c  = (pred_vol  == c).astype(np.uint8)
@@ -183,194 +238,167 @@ class Evaluator:
                 all_assd[c].append(assd_val)
                 case_assd[c] = assd_val
 
-            # --- Accumulate per-case row for CSV ---
+            # ── 4. Accumulate per-case CSV row ────────────────────────
             row: dict = {"case_id": case_id}
             for c in range(1, self.num_classes):
                 row[f"dice_class{c}"] = dice_scores.get(c, 0.0)
                 row[f"assd_class{c}"] = case_assd.get(c, float("inf"))
 
-            # Cross-class mean for this case
             dice_vals = [dice_scores.get(c, 0.0) for c in range(1, self.num_classes)]
             assd_vals = [case_assd.get(c, float("inf")) for c in range(1, self.num_classes)]
             row["dice_mean"] = float(np.mean(dice_vals)) if dice_vals else 0.0
             finite_assd = [v for v in assd_vals if np.isfinite(v)]
             row["assd_mean"] = float(np.mean(finite_assd)) if finite_assd else float("inf")
-
             per_case_rows.append(row)
 
-            # --- Optionally save prediction / label volumes ---
+            # ── 5. Optionally save image / pred / label NIfTI ─────────
             if save_predictions:
-                # Use the original image as geometry reference so that
-                # origin, direction and spacing all match the source volume,
-                # enabling correct overlay in 3D Slicer.
-                ref_img_path = os.path.join(
-                    db_eval.data_dir, f"img_{case_id}.nii.gz"
-                )
-                self._save_nii(
-                    pred_vol.astype(np.int8), case_id, save_dir,
-                    suffix="pred", domain_name=domain_name, ref_img_path=ref_img_path,
-                )
-                self._save_nii(
-                    label_vol.astype(np.int8), case_id, save_dir,
-                    suffix="label", domain_name=domain_name, ref_img_path=ref_img_path,
-                )
+                self._save_nii(self._image_vols[case_id], case_id, save_dir, "image",  domain_name, spacing)
+                self._save_nii(pred_vol.astype(np.int8),  case_id, save_dir, "pred",   domain_name, spacing)
+                self._save_nii(label_vol.astype(np.int8), case_id, save_dir, "label",  domain_name, spacing)
 
-        # --- Aggregate metrics ---
+        # ── 6. Aggregate + report ──────────────────────────────────────
         metrics = self._aggregate_metrics(all_dice, all_assd)
 
         if show_details:
             self._show_metrics(metrics, split)
 
-        # --- Always write CSV when save_dir is provided ---
         if save_dir is not None:
-            self._save_metrics_csv(per_case_rows, metrics, save_dir, split, domain_name, foreground_only)
+            self._save_metrics_csv(
+                per_case_rows, metrics, save_dir, split, domain_name, isotropic_spacing
+            )
 
         return metrics
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Slice grouping (used once during _prepare_cases)
     # ------------------------------------------------------------------
 
-    def _load_spacing_map(self) -> dict:
-        """Load per-case final voxel spacing from ``processing_log.csv``.
+    def _group_slices_by_case(self, db_eval) -> dict:
+        """Iterate *db_eval* and group samples by ``case_name``.
 
-        The CSV column ``final_spacing_xyz`` stores spacing as
-        ``"{x}x{y}x{z}"`` (e.g. ``"0.9023x0.9023x3.0000"``).
-        SimpleITK returns arrays in ``(z, y, x)`` order, so this method
-        returns spacing as ``(z, y, x)`` tuples.
-
-        Returns
-        -------
-        dict
-            ``{(dataset_name, case_id): (z_sp, y_sp, x_sp)}``
-        """
-        # both trainer and test.py will use this function, so we need to check if the logger is None
-        log_path = os.path.join(self.args.data_dir, "processing_log.csv")
-        spacing_map: dict = {}
-
-        if not os.path.exists(log_path):
-            if self.logger is not None:
-                self.logger.warning(
-                    f"processing_log.csv not found at '{log_path}'. "
-                    "Falling back to isotropic 1 mm spacing for all cases."
-                )
-            else:
-                print(
-                    f"processing_log.csv not found at '{log_path}'. "
-                    "Falling back to isotropic 1 mm spacing for all cases."
-                )
-            return spacing_map
-
-        with open(log_path, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                domain  = row["dataset"].strip()
-                case_id = row["case_id"].strip()
-                # "0.9023x0.9023x3.0000"  →  x, y, z
-                parts = row["final_spacing_xyz"].strip().split("x")
-                x_sp, y_sp, z_sp = float(parts[0]), float(parts[1]), float(parts[2])
-                # Store in (z, y, x) to match numpy array axis order
-                spacing_map[(domain, case_id)] = (z_sp, y_sp, x_sp)
-
-        if self.logger is not None:
-            self.logger.info(f"Loaded spacing for {len(spacing_map)} cases from processing_log.csv.")
-        else:
-            print(f"Loaded spacing for {len(spacing_map)} cases from processing_log.csv.")
-        return spacing_map
-
-    def _get_spacing(self, domain_name: str, case_id: str) -> tuple:
-        """Return ``(z, y, x)`` spacing in mm for one case."""
-        # both trainer and test.py will use this function, so we need to check if the logger is None
-        key = (domain_name, case_id)
-        if key not in self._spacing_map:
-            if self.logger is not None:
-                self.logger.debug(
-                    f"Spacing not found for ({domain_name}, {case_id}). "
-                    "Using isotropic 1 mm.")
-            else:
-                print(f"Spacing not found for ({domain_name}, {case_id}). Using isotropic 1 mm.")
-        return self._spacing_map.get(key, (1.0, 1.0, 1.0))
-
-    def _load_fg_range_map(self) -> dict:
-        """Load per-case foreground z-range from ``processing_log.csv``.
-
-        Reads the ``z_start`` and ``z_end`` columns which mark the first and
-        last slice index (inclusive, within the processed volume) that contain
-        at least one foreground voxel.
+        Each element of the returned list is a tuple
+        ``(z_index: int, image: np.ndarray (H,W), mask: np.ndarray (H,W))``.
+        Both arrays are 2-D; tensors produced by transforms are converted
+        to numpy automatically.
 
         Returns
         -------
         dict
-            ``{(dataset_name, case_id): (z_start, z_end)}``
+            ``{case_id: [(z_idx, image_2d, mask_2d), ...]}``, sorted by
+            ascending z-index within each case.
         """
-        log_path = os.path.join(self.args.data_dir, "processing_log.csv")
-        fg_range_map: dict = {}
+        case_dict: dict = defaultdict(list)
 
-        if not os.path.exists(log_path):
-            return fg_range_map
+        for idx in range(len(db_eval)):
+            sample    = db_eval[idx]
+            case_id   = sample["case_name"]
+            slice_idx = int(sample["slice_name"])
 
-        with open(log_path, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                domain  = row["dataset"].strip()
-                case_id = row["case_id"].strip()
-                z_start = int(row["z_start"].strip())
-                z_end   = int(row["z_end"].strip())
-                fg_range_map[(domain, case_id)] = (z_start, z_end)
+            image = sample["image"]
+            mask  = sample["mask"]
 
-        return fg_range_map
+            # Normalise to 2-D float32 numpy (handles tensor from transforms)
+            if isinstance(image, torch.Tensor):
+                image = image.squeeze().cpu().numpy().astype(np.float32)
+            else:
+                image = np.squeeze(np.asarray(image, dtype=np.float32))
 
-    def _get_fg_range(self, domain_name: str, case_id: str):
-        """Return ``(z_start, z_end)`` foreground slice range for one case.
+            if isinstance(mask, torch.Tensor):
+                mask = mask.squeeze().cpu().numpy().astype(np.int64)
+            else:
+                mask = np.squeeze(np.asarray(mask)).astype(np.int64)
 
-        Returns *None* if the case is not found in ``processing_log.csv``.
-        """
-        return self._fg_range_map.get((domain_name, case_id), None)
+            case_dict[case_id].append((slice_idx, image, mask))
+
+        # Sort by ascending z-index within each case
+        return {
+            cid: sorted(slices, key=lambda t: t[0])
+            for cid, slices in case_dict.items()
+        }
+
+    # ------------------------------------------------------------------
+    # 2.5-D inference on an ordered slice list
+    # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def _infer_volume(self, image_vol: np.ndarray) -> np.ndarray:
-        """Run 2.5D inference on a complete volume.
+    def _infer_case(self, images: list) -> np.ndarray:
+        """Run 2.5-D inference on an ordered list of 2-D image slices.
 
-        For each slice *i*, the triplet ``(image[i-1], image[i], image[i+1])``
-        is fed into the model.  Boundary slices use edge-replication: the
-        first/last slice stands in for the missing neighbour.
+        For slice *i* the triplet ``(images[i-1], images[i], images[i+1])``
+        is fed into the model.  Boundary slices use edge-replication.
+
+        When the spatial size ``(H, W)`` of the slices differs from
+        ``args.img_size``, each slice is bilinearly resampled to
+        ``(img_size, img_size)`` before the forward pass, and the prediction
+        is nearest-neighbour mapped back to ``(H, W)`` to match the original
+        label volume.
 
         Parameters
         ----------
-        image_vol : np.ndarray, shape ``(D, H, W)``
-            Full 3-D image volume, float32.
+        images : list[np.ndarray]
+            Ordered float32 arrays, each shape ``(H, W)``.
 
         Returns
         -------
         np.ndarray, shape ``(D, H, W)``, dtype int64
-            Argmax class predictions assembled slice by slice.
         """
-        D = image_vol.shape[0]
+        N  = len(images)
+        H, W   = images[0].shape[:2]
+        img_size    = self.args.img_size
+        need_resize = (H != img_size or W != img_size)
+
         pred_slices: list[np.ndarray] = []
+        for i in range(N):
+            prev_t = self._slice_to_tensor(images[max(0, i - 1)],    img_size if need_resize else None)
+            curr_t = self._slice_to_tensor(images[i],                 img_size if need_resize else None)
+            next_t = self._slice_to_tensor(images[min(N - 1, i + 1)], img_size if need_resize else None)
 
-        for i in range(D):
-            prev_i = max(0, i - 1)
-            next_i = min(D - 1, i + 1)
-
-            def _to_tensor(arr: np.ndarray) -> torch.Tensor:
-                """(H, W) → (1, 1, H, W) on device."""
-                return (
-                    torch.from_numpy(arr.astype(np.float32))
-                    .unsqueeze(0)   # → (1, H, W)
-                    .unsqueeze(0)   # → (1, 1, H, W)
-                    .to(self.device)
-                )
-
-            prev_t = _to_tensor(image_vol[prev_i])
-            curr_t = _to_tensor(image_vol[i])
-            next_t = _to_tensor(image_vol[next_i])
-
-            # model(prev, curr, next) → logits (1, C, H, W)
+            # model(prev, curr, next) → logits (1, C, *, *)
             logits = self.model(prev_t, curr_t, next_t)
-            pred   = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()  # (H, W)
-            pred_slices.append(pred)
+            pred   = torch.argmax(logits, dim=1)             # (1, *, *)
+
+            # Map prediction back to original (H, W) if resized
+            if need_resize:
+                pred = F.interpolate(
+                    pred.unsqueeze(0).float(),
+                    size=(H, W),
+                    mode='nearest',
+                ).squeeze(0)                                 # (1, H, W)
+
+            pred_slices.append(pred.squeeze(0).cpu().numpy())  # (H, W)
 
         return np.stack(pred_slices, axis=0).astype(np.int64)  # (D, H, W)
+
+    def _slice_to_tensor(
+        self, arr: np.ndarray, target_size: int = None
+    ) -> torch.Tensor:
+        """Convert a 2-D float32 array to a ``(1, 1, H, W)`` device tensor.
+
+        Parameters
+        ----------
+        arr : np.ndarray, shape ``(H, W)``
+        target_size : int, optional
+            When provided, bilinearly resizes to ``(target_size, target_size)``.
+        """
+        t = (
+            torch.from_numpy(np.asarray(arr, dtype=np.float32))
+            .unsqueeze(0)   # → (1, H, W)
+            .unsqueeze(0)   # → (1, 1, H, W)
+            .to(self.device)
+        )
+        if target_size is not None:
+            t = F.interpolate(
+                t,
+                size=(target_size, target_size),
+                mode='bilinear',
+                align_corners=False,
+            )
+        return t
+
+    # ------------------------------------------------------------------
+    # NIfTI saving — no reference-image mechanism
+    # ------------------------------------------------------------------
 
     def _save_nii(
         self,
@@ -379,48 +407,39 @@ class Evaluator:
         output_dir: str,
         suffix: str,
         domain_name: str,
-        ref_img_path: str = None,
+        spacing: tuple = None,
     ) -> None:
-        """Save a 3-D numpy volume as a ``.nii.gz`` file via SimpleITK.
+        """Save a 3-D numpy volume as a ``.nii.gz`` NIfTI file.
 
-        When *ref_img_path* is supplied the saved file inherits the
-        **complete geometry** (spacing, origin, direction cosines) of the
-        reference image via ``CopyInformation``.  This is required for
-        segmentation overlays in 3D Slicer to align correctly with the
-        original scalar volume.
+        The three files written per case (``image``, ``pred``, ``label``) all
+        receive the **same** voxel spacing, origin ``(0, 0, 0)``, and identity
+        direction matrix, so they overlay correctly in 3D Slicer without any
+        reference image or post-hoc alignment.
 
         Parameters
         ----------
         volume : np.ndarray
             3-D array in ``(D, H, W)`` / ``(z, y, x)`` order.
-        case_id : str
-            Case identifier used in the output filename.
-        output_dir : str
-            Output directory (created if absent).
-        suffix : str
-            Filename prefix, e.g. ``'pred'`` or ``'label'``.
-        ref_img_path : str, optional
-            Path to the original ``.nii.gz`` image whose geometry should be
-            copied.  When omitted only spacing metadata is unavailable and
-            the default SimpleITK geometry (origin=0, identity direction)
-            is used.
+        spacing : tuple, optional
+            ``(z_sp, y_sp, x_sp)`` in mm.  Falls back to isotropic 1 mm
+            when *None*.
         """
-        # only test.py will use this function, so we use print() directly
         os.makedirs(output_dir, exist_ok=True)
 
         img = sitk.GetImageFromArray(volume)
 
-        if ref_img_path and os.path.exists(ref_img_path):
-            # Copy spacing + origin + direction from the source image so
-            # that the segmentation file is geometrically aligned with it.
-            ref = sitk.ReadImage(ref_img_path)
-            img.CopyInformation(ref)
-        else:
-            print(f"Reference image not found: '{ref_img_path}'. Saved NIfTI will lack correct origin/direction and may not overlay properly in 3D Slicer.")
+        # SimpleITK SetSpacing expects (x, y, z)
+        z_sp, y_sp, x_sp = spacing if spacing is not None else (1.0, 1.0, 1.0)
+        img.SetSpacing((float(x_sp), float(y_sp), float(z_sp)))
+        # Origin and direction stay at SimpleITK defaults → (0,0,0) + identity
 
-        out_path = os.path.join(output_dir, f"{domain_name}_{suffix}_{case_id}.nii.gz")
+        out_path = os.path.join(output_dir, f"{domain_name}_{case_id}_{suffix}.nii.gz")
         sitk.WriteImage(img, out_path)
         print(f"Saved {out_path}")
+
+    # ------------------------------------------------------------------
+    # Metrics aggregation / display / CSV
+    # ------------------------------------------------------------------
 
     def _aggregate_metrics(
         self,
@@ -429,9 +448,7 @@ class Evaluator:
     ) -> dict:
         """Compute mean Dice and ASSD across volumes per class and overall.
 
-        Infinite ASSD values (empty prediction or ground-truth mask) are
-        excluded from the mean; if every volume yields ``inf`` for a class,
-        that class reports ``inf``.
+        Infinite ASSD values are excluded from the mean.
 
         Returns
         -------
@@ -462,8 +479,7 @@ class Evaluator:
         return metrics
 
     def _show_metrics(self, metrics: dict, split: str) -> None:
-        """Print a human-readable summary."""
-        # only test.py will use this function, so we use print() directly
+        """Print a human-readable per-class summary."""
         print(
             f"[{split}] dice_mean={metrics.get('dice_mean', 0.0):.4f} | "
             f"assd_mean={metrics.get('assd_mean', float('inf')):.4f}"
@@ -474,9 +490,7 @@ class Evaluator:
             assd = metrics.get(f"assd_class{c}", float("inf"))
             lines.append(f"    Class {c:>2d}: Dice={dice:.4f}  ASSD={assd:.4f}")
         if lines:
-            print(
-                f"[{split}] Per-class breakdown:\n" + "\n".join(lines)
-            )
+            print(f"[{split}] Per-class breakdown:\n" + "\n".join(lines))
 
     def _save_metrics_csv(
         self,
@@ -485,33 +499,22 @@ class Evaluator:
         output_dir: str,
         split: str,
         domain_name: str,
-        foreground_only: bool,
+        isotropic_spacing: bool,
     ) -> None:
         """Write per-case and overall-mean metrics to a CSV file.
 
-        The CSV is saved at ``{output_dir}/metrics_{split}_{domain_name}.csv``.  The last
-        row is a ``MEAN`` summary row aggregated over all cases.
-
-        Parameters
-        ----------
-        per_case_rows : list[dict]
-            One dict per evaluated volume.  All dicts share the same keys.
-        overall_metrics : dict
-            Aggregated metrics returned by :meth:`_aggregate_metrics`.
-        output_dir : str
-            Directory to write the CSV into (created if absent).
-        split : str
-            Split label used in the filename.
-        foreground_only : bool
-            Whether the evaluation was performed on foreground-only slices.
+        Saved at ``{output_dir}/metrics_{split}_{domain_name}_{suffix}.csv``
+        where *suffix* is ``iso`` when isotropic spacing was used, or empty
+        when real physical spacing was used.
         """
-        # only test.py will use this function, so we use print() directly
         if not per_case_rows:
             return
 
         os.makedirs(output_dir, exist_ok=True)
-        csv_path = os.path.join(output_dir, f"metrics_{split}_{domain_name}_{'foreground' if foreground_only else ''}.csv")
-        # fieldnames: ['case_id', 'dice_class1', 'assd_class1', ..., 'dice_mean', 'assd_mean']
+        spacing_tag = "iso" if isotropic_spacing else ""
+        csv_path    = os.path.join(
+            output_dir, f"metrics_{split}_{domain_name}{'_' + spacing_tag if spacing_tag else ''}.csv"
+        )
         fieldnames = list(per_case_rows[0].keys())
 
         def _fmt(v):
@@ -523,15 +526,70 @@ class Evaluator:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
 
-            # --- Per-case rows ---
             for row in per_case_rows:
                 writer.writerow({k: _fmt(v) for k, v in row.items()})
 
-            # --- Overall MEAN row (cross-case average for every column) ---
             mean_row: dict = {"case_id": "MEAN"}
             for fn in fieldnames[1:]:
-                val = overall_metrics.get(fn, 0.0)
-                mean_row[fn] = _fmt(val)
+                mean_row[fn] = _fmt(overall_metrics.get(fn, 0.0))
             writer.writerow(mean_row)
 
         print(f"Metrics CSV saved → {csv_path}")
+
+    # ------------------------------------------------------------------
+    # Per-case spacing helpers
+    # ------------------------------------------------------------------
+
+    def _load_spacing_map(self) -> dict:
+        """Load per-case final voxel spacing from ``processing_log.csv``.
+
+        Returns
+        -------
+        dict
+            ``{(dataset_name, case_id): (z_sp, y_sp, x_sp)}``
+        """
+        log_path    = os.path.join(self.args.data_dir, "processing_log.csv")
+        spacing_map: dict = {}
+
+        if not os.path.exists(log_path):
+            self._log(
+                f"processing_log.csv not found at '{log_path}'. "
+                "Falling back to isotropic 1 mm spacing for all cases.",
+                level="warning",
+            )
+            return spacing_map
+
+        with open(log_path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                domain  = row["dataset"].strip()
+                case_id = row["case_id"].strip()
+                parts   = row["final_spacing_xyz"].strip().split("x")
+                x_sp, y_sp, z_sp = float(parts[0]), float(parts[1]), float(parts[2])
+                spacing_map[(domain, case_id)] = (z_sp, y_sp, x_sp)
+
+        self._log(
+            f"Loaded spacing for {len(spacing_map)} cases from processing_log.csv."
+        )
+        return spacing_map
+
+    def _get_spacing(self, domain_name: str, case_id: str) -> tuple:
+        """Return ``(z, y, x)`` spacing in mm for one case."""
+        key = (domain_name, case_id)
+        if key not in self._spacing_map:
+            self._log(
+                f"Spacing not found for ({domain_name}, {case_id}). Using isotropic 1 mm.",
+                level="debug",
+            )
+        return self._spacing_map.get(key, (1.0, 1.0, 1.0))
+
+    # ------------------------------------------------------------------
+    # Internal logging helper
+    # ------------------------------------------------------------------
+
+    def _log(self, msg: str, level: str = "info") -> None:
+        """Route a message to the logger (if set) or stdout."""
+        if self.logger is not None:
+            getattr(self.logger, level)(msg)
+        else:
+            print(msg)

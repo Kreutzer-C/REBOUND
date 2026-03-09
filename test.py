@@ -4,7 +4,8 @@ import json
 import torch
 import numpy as np
 
-from dataloaders.dataset_CSANet import CSANet_VolumeDataset
+from torchvision import transforms
+from dataloaders.dataset_CSANet import CSANet_SliceDataset, RandomGenerator_new
 from trainer.evaluator import Evaluator
 
 
@@ -38,8 +39,8 @@ def parse_args():
     # Inference
     parser.add_argument('--img_size', type=int, default=256,
                         help='Image size')
-    parser.add_argument('--foreground_only', '-fgo', action='store_true',
-                        help='Evaluate on foreground-only slices')
+    parser.add_argument('--isotropic_spacing', '-iso', action='store_true',
+                        help='Use isotropic 1 mm spacing for ASSD (instead of real physical spacing)')
 
     # Output options
     parser.add_argument('--save_predictions', action='store_true',
@@ -127,21 +128,25 @@ def main():
     print(f">>> Saving predictions to: {args.save_dir}")
 
     # BEGIN TESTING
-    evaluator = Evaluator(
-        args=args,
-        metadata=metadata,
-        model=model,
-        device=device
-        )
-    db_test = CSANet_VolumeDataset(
+    db_test = CSANet_SliceDataset(
         base_dir=args.data_dir,
         domain_name=args.target,
         split='test',
         metadata=metadata,
+        transform=transforms.Compose(
+            [RandomGenerator_new(output_size=(args.img_size, args.img_size), phase='test')])
         )
-    print(f">>> Number of test volumes: {len(db_test)}")
+    print(f">>> Number of test slices: {len(db_test)}")
 
-    evaluator.evaluate(db_eval=db_test, foreground_only=args.foreground_only, show_details=True, save_predictions=args.save_predictions, save_dir=args.save_dir)
+    # db_test is pre-loaded once inside Evaluator.__init__
+    evaluator = Evaluator(
+        args=args,
+        metadata=metadata,
+        model=model,
+        device=device,
+        db_eval=db_test,
+        )
+    evaluator.evaluate(isotropic_spacing=args.isotropic_spacing, show_details=True, save_predictions=args.save_predictions, save_dir=args.save_dir)
 
     print(f">>> Testing completed.")
 

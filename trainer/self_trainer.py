@@ -11,7 +11,7 @@ from utils.loss_functions import DiceLoss
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import CSANet_SliceDataset, CSANet_VolumeDataset, RandomGenerator
+from dataloaders.dataset_CSANet import CSANet_SliceDataset, CSANet_VolumeDataset, RandomGenerator, RandomGenerator_new
 from trainer.evaluator import Evaluator
 
 
@@ -44,13 +44,15 @@ class SelfTrainer(BaseTrainer):
         self.logger.info(f"Number of training slices: {len(db_train)}")
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
-        self.db_val = CSANet_VolumeDataset(
+        self.db_val = CSANet_SliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='test',
             metadata=self.metadata,
+            transform=transforms.Compose(
+                [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
         )
-        self.logger.info(f"Number of val volumes: {len(self.db_val)}")
+        self.logger.info(f"Number of val slices: {len(self.db_val)}")
 
         # set optimizer & scheduler
         if self.args.optimizer == 'AdamW':
@@ -74,12 +76,13 @@ class SelfTrainer(BaseTrainer):
         self.ce_loss = CrossEntropyLoss()
         self.dice_loss = DiceLoss(n_classes=self.num_classes)
 
-        # set evaluator
+        # set evaluator (db_val pre-loaded once here)
         self.evaluator = Evaluator(
             args=self.args,
             metadata=self.metadata,
             model=self.model,
             device=self.device,
+            db_eval=self.db_val,
             logger=self.logger,
         )
 
@@ -107,7 +110,7 @@ class SelfTrainer(BaseTrainer):
             self._log_metrics(train_metrics, prefix='train', epoch=epoch)
 
             # validate
-            val_metrics = self.evaluator.evaluate(db_eval=self.db_val)
+            val_metrics = self.evaluator.evaluate(isotropic_spacing=True)
             self._log_metrics(val_metrics, prefix='val', epoch=epoch)
 
             # check best metric
