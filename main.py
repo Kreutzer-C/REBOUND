@@ -15,7 +15,7 @@ from utils import load_config_as_namespace
 # output = model(x_sample, x_sample, x_sample)
 # print(output.shape)
 
-image = np.load("/opt/data/private/REBOUND/datasets/ABDOMINAL/processed_DDFP/CHAOST2/slices/vol_0001_slice_0013.npz")['img']
-print(image)
-print(image.min(), image.max())
-print(image.shape)
+# image = np.load("/opt/data/private/REBOUND/datasets/ABDOMINAL/processed_DDFP/CHAOST2/slices/vol_0001_slice_0013.npz")['img']
+# print(image)
+# print(image.min(), image.max())
+# print(image.shape)

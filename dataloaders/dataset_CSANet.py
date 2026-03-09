@@ -91,10 +91,9 @@ class CSANet_SliceDataset(Dataset):
         next_slice = np.load(next_slice_path)['img']
         prev_slice = np.load(prev_slice_path)['img']
 
-        if isinstance(self.transform, RandomGenerator_new):
-            image = min_max_normalize(image)
-            next_slice = min_max_normalize(next_slice)
-            prev_slice = min_max_normalize(prev_slice)
+        image = min_max_normalize(image)
+        next_slice = min_max_normalize(next_slice)
+        prev_slice = min_max_normalize(prev_slice)
 
         sample = {'image': image, 'mask': mask, 'next_image': next_slice, 'prev_image': prev_slice}
 
