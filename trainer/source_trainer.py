@@ -12,7 +12,7 @@ from utils.loss_functions import DiceLoss
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import CSANet_SliceDataset, CSANet_VolumeDataset, RandomGenerator_new
+from dataloaders.dataset_CSANet import CSANet_SliceDataset, RandomGenerator_new
 from trainer.evaluator import Evaluator
 
 

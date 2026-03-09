@@ -11,7 +11,7 @@ from utils.loss_functions import DiceLoss
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import CSANet_SliceDataset, CSANet_VolumeDataset, RandomGenerator, RandomGenerator_new
+from dataloaders.dataset_CSANet import CSANet_SliceDataset, RandomGenerator_new
 from trainer.evaluator import Evaluator
 
 
@@ -39,7 +39,7 @@ class SelfTrainer(BaseTrainer):
             split='train',
             metadata=self.metadata,
             transform=transforms.Compose(
-                [RandomGenerator(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+                [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
         )
         self.logger.info(f"Number of training slices: {len(db_train)}")
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)

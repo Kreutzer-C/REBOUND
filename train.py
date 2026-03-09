@@ -17,7 +17,7 @@ def parse_args():
                         help='Dataset name')
     parser.add_argument('--data_dir', type=str, default='./datasets',
                         help='Data directory')
-    parser.add_argument('--processed_dir', type=str, default='processed',
+    parser.add_argument('--processed_dir', '-pd', type=str, default='processed',
                         help='Processed data directory')
     parser.add_argument('--source', '-src', type=str, default='BTCV',
                         help='Source domain name')
