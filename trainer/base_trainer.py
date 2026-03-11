@@ -97,13 +97,12 @@ class BaseTrainer(ABC):
             wandb.log(wandb_metrics, step=epoch)
 
 
-    def save_checkpoint(self, is_best=False, filename=None):
+    def save_checkpoint(self, current_metric, is_best=False):
         """
         Save model checkpoint.
         (Considering no need for resume training, we comment out the optimizer and scheduler state dict saving)
         """
-        if filename is None:
-            filename = f'epoch_{self.current_epoch}_dice_{self.best_metric:.4f}.pth'
+        filename = f'epoch_{self.current_epoch}_dice_{current_metric:.4f}.pth'
         
         # Get model state dict (handle DataParallel)
         if isinstance(self.model, nn.DataParallel):
@@ -116,6 +115,7 @@ class BaseTrainer(ABC):
             'global_step': self.global_step,
             'model_state_dict': model_state,
             # 'optimizer_state_dict': self.optimizer.state_dict(),
+            'current_metric': current_metric,
             'best_metric': self.best_metric,
             'config': self.all_configs,
         }

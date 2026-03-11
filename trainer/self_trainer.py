@@ -121,7 +121,7 @@ class SelfTrainer(BaseTrainer):
                 self.logger.info(f"New best model! Dice: {current_metric:.4f}")
             
             # save checkpoint
-            self.save_checkpoint(is_best=is_best)
+            self.save_checkpoint(current_metric=current_metric, is_best=is_best)
 
             # Updata learning rate
             self.scheduler.step()

@@ -174,7 +174,7 @@ class TentTrainer(BaseTrainer):
                 self.best_metric = current_metric
                 self.logger.info(f"New best model! Dice: {current_metric:.4f}")
 
-            self.save_checkpoint(is_best=is_best)
+            self.save_checkpoint(current_metric=current_metric, is_best=is_best)
             self.scheduler.step()
 
         total_time = time.time() - start_time
