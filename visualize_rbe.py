@@ -214,10 +214,29 @@ def save_combined_png(
     entropy: np.ndarray,
     save_dir: str,
     filename_prefix: str,
+    alpha: float = 0.1,
+    beta: float = 0.3,
+    use_threshold: bool = True,
 ) -> None:
     """将原图（含 label 轮廓）、预测叠加图、差分图、熵图并排保存为单张 PNG。
 
-    布局：| Image + Label Contours | Image + Pred Overlay | Boundary Map | Entropy Map |
+    use_threshold=True（默认）：差分图和熵图二值化为 {0,1} mask
+      boundary_mask[i] = 1  if  B(v_i) > alpha   （高频解剖边界）
+      entropy_mask[i]  = 1  if  H(P_i) > beta    （高不确定性像素）
+
+    use_threshold=False：直接显示连续值热力图（hot / plasma 色图）
+
+    布局：| Image + Label Contours | Image + Pred Overlay |
+          | Boundary (mask or map) | Entropy  (mask or map) |
+
+    Parameters
+    ----------
+    alpha : float
+        差分阈值（默认 0.1）。仅 use_threshold=True 时生效。
+    beta  : float
+        熵阈值（默认 0.3 nats）。仅 use_threshold=True 时生效。
+    use_threshold : bool
+        True → 二值 mask；False → 连续热力图。
     """
     os.makedirs(save_dir, exist_ok=True)
 
@@ -234,17 +253,38 @@ def save_combined_png(
     axes[1].set_title("Image + Pred Overlay", fontsize=9)
     axes[1].set_axis_off()
 
-    # ── 3：差分图 ─────────────────────────────────────────────────────────────
-    im1 = axes[2].imshow(boundary, cmap="hot", interpolation="nearest")
-    fig.colorbar(im1, ax=axes[2], fraction=0.046, pad=0.04)
-    axes[2].set_title("Boundary Map  B(v)", fontsize=9)
-    axes[2].set_axis_off()
+    if use_threshold:
+        # ── 3：差分二值 mask（边界像素=白）────────────────────────────────────
+        boundary_mask = (boundary > alpha).astype(np.uint8)
+        axes[2].imshow(boundary_mask, cmap="gray", interpolation="nearest", vmin=0, vmax=1)
+        b_ratio = boundary_mask.mean() * 100
+        axes[2].set_title(
+            f"Boundary Mask  B(v)>α={alpha:.3g}\n({b_ratio:.1f}% pixels)",
+            fontsize=8,
+        )
+        axes[2].set_axis_off()
 
-    # ── 4：熵图 ───────────────────────────────────────────────────────────────
-    im2 = axes[3].imshow(entropy, cmap="plasma", interpolation="nearest")
-    fig.colorbar(im2, ax=axes[3], fraction=0.046, pad=0.04)
-    axes[3].set_title("Entropy Map  H(P)", fontsize=9)
-    axes[3].set_axis_off()
+        # ── 4：熵二值 mask（高不确定=白）──────────────────────────────────────
+        entropy_mask = (entropy > beta).astype(np.uint8)
+        axes[3].imshow(entropy_mask, cmap="gray", interpolation="nearest", vmin=0, vmax=1)
+        e_ratio = entropy_mask.mean() * 100
+        axes[3].set_title(
+            f"Entropy Mask  H(P)>β={beta:.3g}\n({e_ratio:.1f}% pixels)",
+            fontsize=8,
+        )
+        axes[3].set_axis_off()
+    else:
+        # ── 3：差分连续热力图 ──────────────────────────────────────────────────
+        im1 = axes[2].imshow(boundary, cmap="hot", interpolation="nearest")
+        fig.colorbar(im1, ax=axes[2], fraction=0.046, pad=0.04)
+        axes[2].set_title("Boundary Map  B(v)", fontsize=9)
+        axes[2].set_axis_off()
+
+        # ── 4：熵连续热力图 ────────────────────────────────────────────────────
+        im2 = axes[3].imshow(entropy, cmap="plasma", interpolation="nearest")
+        fig.colorbar(im2, ax=axes[3], fraction=0.046, pad=0.04)
+        axes[3].set_title("Entropy Map  H(P)", fontsize=9)
+        axes[3].set_axis_off()
 
     fig.suptitle(filename_prefix, fontsize=8, y=1.01)
     fig.tight_layout(pad=0.4)
@@ -287,15 +327,30 @@ def main():
     parser.add_argument("--domain",     type=str, default="CHAOST2",  help="目标域名，例如 CHAOST2 / BTCV")
     parser.add_argument("--case_id",    type=str, default="0001",  help="要可视化的 case ID，例如 0001")
     parser.add_argument("--split",      default="test", help="数据集划分: train / test（默认 test）")
-    parser.add_argument("--exp_path",   type=str, required=True, help="实验目录路径")
+    parser.add_argument("--exp_path",   type=str, default=None, help="实验目录路径")
     parser.add_argument("--img_size",   type=int, default=256, help="模型输入分辨率（默认 256）")
     parser.add_argument("--save_dir",   default=None,  help="PNG 保存目录")
     parser.add_argument("--model_type", default="CSANet",
                         choices=["CSANet", "CSANet_V2", "CSANet_V3"],
                         help="模型类型（默认 CSANet）")
+    parser.add_argument("--alpha",         type=float, default=0.1,
+                        help="差分阈值 α：B(v)>α 视为边界（默认 0.1，仅 --threshold 模式生效）")
+    parser.add_argument("--beta",          type=float, default=0.3,
+                        help="熵阈值 β：H(P)>β 视为高不确定（默认 0.3 nats，仅 --threshold 模式生效）")
+    parser.add_argument("--threshold",     action="store_true", default=False,
+                        help="启用后将 Boundary/Entropy 二值化为 {0,1} mask；"
+                             "不指定则显示连续热力图（默认关闭）")
     parser.add_argument("--device",     default="cuda:0" if torch.cuda.is_available() else "cpu",
                         help="运行设备（默认 cuda:0）")
     args = parser.parse_args()
+
+    if args.exp_path is None:
+        if args.domain == "CHAOST2":
+            args.exp_path = "/opt/data/private/REBOUND/results/ABDOMINAL/BTCV_to_BTCV/source_pretrain_3_DDFPdata"
+        elif args.domain == "BTCV":
+            args.exp_path = "/opt/data/private/REBOUND/results/ABDOMINAL/CHAOST2_to_CHAOST2/source_pretrain_24_DDFPdataNorm"
+        else:
+            raise ValueError(f"Unknown domain: {args.domain}")
 
     metadata = os.path.join(args.exp_path, "configs_backup", "metadata.json")
     model_cfg = os.path.join(args.exp_path, "configs_backup", "model_config.json")
@@ -375,7 +430,12 @@ def main():
         prefix = f"{args.domain}_{args.case_id}_slice{z_idx:04d}"
         case_save_dir = os.path.join(args.save_dir, args.case_id)
         os.makedirs(case_save_dir, exist_ok=True)
-        save_combined_png(curr_img, mask, pred, boundary, entropy, case_save_dir, prefix)
+        save_combined_png(
+            curr_img, mask, pred, boundary, entropy,
+            case_save_dir, prefix,
+            alpha=args.alpha, beta=args.beta,
+            use_threshold=args.threshold,
+        )
 
     print(f"\n[✓] 所有可视化结果已保存至: {args.save_dir}")
 
