@@ -43,6 +43,8 @@ def parse_args():
                         help='Image size')
     parser.add_argument('--base_lr', '-lr', type=float, default=1e-4,
                         help='Base learning rate')
+    parser.add_argument('--min_lr', type=float, default=None,
+                        help='Minimum learning rate for scheduler (1e-3 * base_lr if not provided)')                    
     parser.add_argument('--weight_decay', '-wd', type=float, default=5e-4,
                         help='Weight decay')
     parser.add_argument('--scheduler', type=str, default='cosine_warmup',

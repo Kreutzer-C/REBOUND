@@ -64,11 +64,12 @@ class OracleTrainer(BaseTrainer):
         else:
             raise ValueError(f"Invalid optimizer: {self.args.optimizer}")
         
+        eta_min = self.args.min_lr if self.args.min_lr is not None else 1e-3 * self.args.base_lr
         self.scheduler = get_scheduler(
             optimizer=self.optimizer,
             scheduler_name=self.args.scheduler,
             num_epochs=self.args.num_epochs,
-            eta_min=1e-6,
+            eta_min=eta_min,
             warmup_epochs=self.args.num_epochs // 10,
         )
 
