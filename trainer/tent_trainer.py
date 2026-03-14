@@ -10,8 +10,9 @@ from torchvision import transforms
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import CSANet_SliceDataset, RandomGenerator_new
-from trainer.evaluator import Evaluator
+from dataloaders.dataset_CSANet import TripleSliceDataset
+from dataloaders.augment import RandomGenerator_new
+from .evaluator import Evaluator
 
 
 class TentTrainer(BaseTrainer):
@@ -74,7 +75,7 @@ class TentTrainer(BaseTrainer):
         #    target-domain train split  →  entropy optimisation (no labels used)
         #    target-domain test  split  →  volume-level evaluation
         # ----------------------------------------------------------
-        db_train = CSANet_SliceDataset(
+        db_train = TripleSliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='train',
@@ -92,7 +93,7 @@ class TentTrainer(BaseTrainer):
             pin_memory=True,
         )
 
-        self.db_val = CSANet_SliceDataset(
+        self.db_val = TripleSliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='test',

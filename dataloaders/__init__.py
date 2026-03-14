@@ -1,3 +1,4 @@
-from .dataset_CSANet import CSANet_SliceDataset, CSANet_VolumeDataset, RandomGenerator, RandomGenerator_new
+from .dataset_CSANet import TripleSliceDataset, VolumeDataset
+from .augment import RandomGenerator, RandomGenerator_new
 
-__all__ = ['CSANet_SliceDataset', 'CSANet_VolumeDataset', 'RandomGenerator', 'RandomGenerator_new']
+__all__ = ['TripleSliceDataset', 'VolumeDataset', 'RandomGenerator', 'RandomGenerator_new']

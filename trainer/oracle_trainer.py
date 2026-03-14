@@ -11,8 +11,9 @@ from utils.loss_functions import DiceLoss
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import CSANet_SliceDataset, RandomGenerator_new
-from trainer.evaluator import Evaluator
+from dataloaders.dataset_CSANet import TripleSliceDataset
+from dataloaders.augment import RandomGenerator_new
+from .evaluator import Evaluator
 
 
 class OracleTrainer(BaseTrainer):
@@ -33,7 +34,7 @@ class OracleTrainer(BaseTrainer):
         self.logger.info(f"Loaded pre-train weight from {self.args.source_pretrain_path}")
 
         # set dataloader
-        db_train = CSANet_SliceDataset(
+        db_train = TripleSliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='train',
@@ -44,7 +45,7 @@ class OracleTrainer(BaseTrainer):
         self.logger.info(f"Number of training slices: {len(db_train)}")
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
-        self.db_val = CSANet_SliceDataset(
+        self.db_val = TripleSliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='test',
