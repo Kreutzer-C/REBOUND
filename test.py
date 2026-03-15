@@ -114,7 +114,7 @@ def main():
 
     # Step5: set model configuration
     if args.model_config is None:
-        if args.is_25d:
+        if 'CSANet' in args.model:
             args.model_config = './networks/R50_ViTB16_config.json'
         else:
             args.model_config = './networks/unet_config.json'
