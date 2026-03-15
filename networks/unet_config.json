@@ -1,0 +1,7 @@
+{
+    "in_channels": 1,
+    "first_channels": 64,
+    "only_feature": false,
+    "only_logits": true,
+    "bilinear": false
+}

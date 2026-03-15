@@ -323,10 +323,15 @@ class Evaluator:
 
     @torch.no_grad()
     def _infer_case(self, images: list) -> np.ndarray:
-        """Run 2.5-D inference on an ordered list of 2-D image slices.
+        """Run per-slice inference on an ordered list of 2-D image slices.
 
-        For slice *i* the triplet ``(images[i-1], images[i], images[i+1])``
-        is fed into the model.  Boundary slices use edge-replication.
+        The inference mode is determined automatically by ``args.model``:
+
+        * **2.5-D** (``'CSANet' in args.model``): each slice is fed as the
+          triplet ``(images[i-1], images[i], images[i+1])`` with
+          edge-replication at boundaries.
+        * **2-D** (all other models): only the current slice is passed,
+          i.e. ``model(curr_t)``.
 
         When the spatial size ``(H, W)`` of the slices differs from
         ``args.img_size``, each slice is bilinearly resampled to
@@ -343,20 +348,24 @@ class Evaluator:
         -------
         np.ndarray, shape ``(D, H, W)``, dtype int64
         """
-        N  = len(images)
-        H, W   = images[0].shape[:2]
+        N           = len(images)
+        H, W        = images[0].shape[:2]
         img_size    = self.args.img_size
         need_resize = (H != img_size or W != img_size)
 
         pred_slices: list[np.ndarray] = []
         for i in range(N):
-            prev_t = self._slice_to_tensor(images[max(0, i - 1)],    img_size if need_resize else None)
-            curr_t = self._slice_to_tensor(images[i],                 img_size if need_resize else None)
-            next_t = self._slice_to_tensor(images[min(N - 1, i + 1)], img_size if need_resize else None)
+            target_size = img_size if need_resize else None
+            curr_t = self._slice_to_tensor(images[i], target_size)
 
-            # model(prev, curr, next) → logits (1, C, *, *)
-            logits = self.model(prev_t, curr_t, next_t)
-            pred   = torch.argmax(logits, dim=1)             # (1, *, *)
+            if self.args.is_25d:
+                prev_t = self._slice_to_tensor(images[max(0, i - 1)],     target_size)
+                next_t = self._slice_to_tensor(images[min(N - 1, i + 1)], target_size)
+                logits = self.model(prev_t, curr_t, next_t)  # (1, C, *, *)
+            else:
+                logits = self.model(curr_t)                  # (1, C, *, *)
+
+            pred = torch.argmax(logits, dim=1)               # (1, *, *)
 
             # Map prediction back to original (H, W) if resized
             if need_resize:

@@ -12,7 +12,7 @@ from utils.loss_functions import DiceLoss
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import TripleSliceDataset
+from dataloaders.dataset_CSANet import TripleSliceDataset, SingleSliceDataset
 from dataloaders.augment import RandomGenerator_new
 from .evaluator import Evaluator
 
@@ -26,30 +26,53 @@ class SourceTrainer(BaseTrainer):
 
 
     def train(self):
-        # load model pre-train weight
-        self.model.load_from(weights=np.load(self.model.config.pretrained_path))
-        self.logger.info(f"Loaded pre-train weight from {self.model.config.pretrained_path}")
+        self.is_25d = self.args.is_25d
+
+        # load CSANet model pre-train weight
+        if 'CSANet' in self.args.model:
+            self.model.load_from(weights=np.load(self.model.config.pretrained_path))
+            self.logger.info(f"Loaded pre-train weight from {self.model.config.pretrained_path}")
 
         # set dataloader
-        db_train = TripleSliceDataset(
-            base_dir=self.args.data_dir,
-            domain_name=self.args.source,
-            split='train',
-            metadata=self.metadata,
-            transform=transforms.Compose(
-                [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
-        )
+        if self.is_25d:
+            db_train = TripleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.source,
+                split='train',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+            )
+        else:
+            db_train = SingleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.source,
+                split='train',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+            )
         self.logger.info(f"Number of training slices: {len(db_train)}")
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
-        self.db_val = TripleSliceDataset(
-            base_dir=self.args.data_dir,
-            domain_name=self.args.source,
-            split='test',
-            metadata=self.metadata,
-            transform=transforms.Compose(
-                [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
-        )
+        if self.is_25d:
+            self.db_val = TripleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.source,
+                split='test',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
+            )
+        else:
+            self.db_val = SingleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.source,
+                split='test',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
+            )
         self.logger.info(f"Number of val slices: {len(self.db_val)}")
 
         # set optimizer & scheduler
@@ -143,12 +166,16 @@ class SourceTrainer(BaseTrainer):
 
         pbar = tqdm(self.train_loader, desc=f'Epoch {self.current_epoch}')
         for batch in pbar:
-            image_batch, label_batch = batch['image'].to(self.device), batch['mask'].to(self.device)    
-            next_image_batch, prev_image_batch = batch['next_image'].to(self.device), batch['prev_image'].to(self.device)
+            image_batch, label_batch = batch['image'].to(self.device), batch['mask'].to(self.device)
+            if self.is_25d:    
+                next_image_batch, prev_image_batch = batch['next_image'].to(self.device), batch['prev_image'].to(self.device)
 
             # forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(prev_image_batch, image_batch, next_image_batch)
+            if self.is_25d:
+                outputs = self.model(prev_image_batch, image_batch, next_image_batch)
+            else:
+                outputs = self.model(image_batch)
 
             # compute loss
             ce_loss = self.ce_loss(outputs, label_batch)

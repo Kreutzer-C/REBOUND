@@ -49,6 +49,9 @@ class RandomGenerator(object):
         self.rand_shift_intensity = RandShiftIntensity(offsets=0.2, prob=0.5)
     
     def __call__(self, sample):
+        has_next = 'next_image' in sample
+        has_prev = 'prev_image' in sample
+
         if self.phase == "train":
             # Apply spatial transformations to the data
             k = flip_axis = angle = None
@@ -71,16 +74,21 @@ class RandomGenerator(object):
         if x != self.output_size[0] or y != self.output_size[1]:
             print(f"Rescaling image from {x}x{y} to {self.output_size[0]}x{self.output_size[1]} (Not Recommended)")
             sample['image'] = zoom(sample['image'], (self.output_size[0] / x, self.output_size[1] / y), order=3)
-            sample['next_image'] = zoom(sample['next_image'], (self.output_size[0] / x, self.output_size[1] / y), order=3)
-            sample['prev_image'] = zoom(sample['prev_image'], (self.output_size[0] / x, self.output_size[1] / y), order=3)
+            if has_next:
+                sample['next_image'] = zoom(sample['next_image'], (self.output_size[0] / x, self.output_size[1] / y), order=3)
+            if has_prev:
+                sample['prev_image'] = zoom(sample['prev_image'], (self.output_size[0] / x, self.output_size[1] / y), order=3)
             sample['mask'] = zoom(sample['mask'], (self.output_size[0] / x, self.output_size[1] / y), order=0)
         
         image = torch.from_numpy(sample['image'].astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(sample['mask'].astype(np.float32))
-        next_image = torch.from_numpy(sample['next_image'].astype(np.float32)).unsqueeze(0)
-        prev_image = torch.from_numpy(sample['prev_image'].astype(np.float32)).unsqueeze(0)
+        sample = {'image': image, 'mask': label.long()}
 
-        sample = {'image': image, 'mask': label.long(), 'next_image': next_image, 'prev_image': prev_image}
+        if has_next:
+            sample['next_image'] = torch.from_numpy(sample['next_image'].astype(np.float32)).unsqueeze(0)
+        if has_prev:
+            sample['prev_image'] = torch.from_numpy(sample['prev_image'].astype(np.float32)).unsqueeze(0)
+
         return sample
 
 
@@ -162,6 +170,7 @@ class RandomGenerator_new(object):
                 result['prev_image'] = torch.from_numpy(
                     augmented['prev_image'].astype(np.float32)).unsqueeze(0)
         else:
+            # Keep numpy.ndarray format for val / test
             result = {
                 'image': augmented['image'].astype(np.float32),
                 'mask':  augmented['mask'].astype(np.float32),

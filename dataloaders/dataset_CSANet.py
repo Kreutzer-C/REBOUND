@@ -102,6 +102,69 @@ class TripleSliceDataset(Dataset):
         return sample
 
 
+class SingleSliceDataset(Dataset):
+    """
+    Dataset handler for 2.5D Single Slice Dataset, designed to manage image and mask data for training and testing phases.
+    """
+    def __init__(self, base_dir, domain_name, split, metadata, transform=None):
+        self.base_dir = base_dir
+        self.domain_name = domain_name
+        self.split = split
+        self.metadata = metadata
+        self.transform = transform
+
+        self.data_dir = os.path.join(self.base_dir, self.domain_name, 'slices')
+        assert os.path.exists(self.data_dir), f"Data directory does not exist: {self.data_dir}"
+
+        self.data_files = self._get_data_files()
+        if len(self.data_files) == 0:
+            raise ValueError(f"No data files found in {self.data_dir} for split '{self.split}'")
+    
+    def _get_data_files(self):
+        """Get list of data files for the specified split."""
+        files = []
+        
+        if self.metadata and "splits" in self.metadata:
+            # Load specific case ids for the specified split
+            case_ids = self.metadata["splits"][self.domain_name][self.split]
+            for f in os.listdir(self.data_dir):
+                if f.endswith('.npz'): 
+                    # vol_0001_slice_0061.npz
+                    case_id = f.split('_')[1]
+                    if case_id in case_ids:
+                        files.append(os.path.join(self.data_dir, f))
+        else:
+            # Load all data files if no splits are defined
+            for f in os.listdir(self.data_dir):
+                if f.endswith('.npz'):
+                    files.append(os.path.join(self.data_dir, f))
+
+        return sorted(files)
+    
+    def __len__(self):
+        return len(self.data_files)
+    
+    def __getitem__(self, idx):
+        data_file = self.data_files[idx]
+        case_name = data_file.split('/')[-1].split('_')[1]
+        slice_name = data_file.split('/')[-1].split('_')[3].split('.')[0]
+
+        data = np.load(data_file)
+        image = data['img']
+        mask = data['label']
+
+        image = min_max_normalize(image)
+
+        sample = {'image': image, 'mask': mask}
+
+        if self.transform:
+            sample = self.transform(sample) # Apply transformations if specified
+        sample['case_name'] = case_name
+        sample['slice_name'] = slice_name
+
+        return sample
+
+
 class VolumeDataset(Dataset):
     """
     Dataset handler for 3D Volume Dataset, designed to manage image and mask data for training and testing phases.

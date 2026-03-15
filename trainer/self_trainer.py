@@ -11,7 +11,7 @@ from utils.loss_functions import DiceLoss
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import TripleSliceDataset
+from dataloaders.dataset_CSANet import TripleSliceDataset, SingleSliceDataset
 from dataloaders.augment import RandomGenerator_new
 from .evaluator import Evaluator
 
@@ -25,6 +25,8 @@ class SelfTrainer(BaseTrainer):
 
 
     def train(self):
+        self.is_25d = self.args.is_25d
+
         # load model pre-train weight
         source_checkpoint = torch.load(self.args.source_pretrain_path)
         if isinstance(self.model, nn.DataParallel):
@@ -34,25 +36,45 @@ class SelfTrainer(BaseTrainer):
         self.logger.info(f"Loaded pre-train weight from {self.args.source_pretrain_path}")
 
         # set dataloader
-        db_train = TripleSliceDataset(
-            base_dir=self.args.data_dir,
-            domain_name=self.args.target,
-            split='train',
-            metadata=self.metadata,
-            transform=transforms.Compose(
-                [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
-        )
+        if self.is_25d:
+            db_train = TripleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.target,
+                split='train',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+            )
+        else:
+            db_train = SingleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.target,
+                split='train',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+            )
         self.logger.info(f"Number of training slices: {len(db_train)}")
         self.train_loader = DataLoader(db_train, batch_size=self.args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
-        self.db_val = TripleSliceDataset(
+        if self.is_25d:
+            self.db_val = TripleSliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='test',
             metadata=self.metadata,
             transform=transforms.Compose(
                 [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
-        )
+            )
+        else:
+            self.db_val = SingleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.target,
+                split='test',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
+            )
         self.logger.info(f"Number of val slices: {len(self.db_val)}")
 
         # set optimizer & scheduler
@@ -147,11 +169,15 @@ class SelfTrainer(BaseTrainer):
         pbar = tqdm(self.train_loader, desc=f'Epoch {self.current_epoch}')
         for batch in pbar:
             image_batch, label_batch = batch['image'].to(self.device), batch['mask'].to(self.device)    
-            next_image_batch, prev_image_batch = batch['next_image'].to(self.device), batch['prev_image'].to(self.device)
+            if self.is_25d:
+                next_image_batch, prev_image_batch = batch['next_image'].to(self.device), batch['prev_image'].to(self.device)
 
             # forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(prev_image_batch, image_batch, next_image_batch)
+            if self.is_25d:
+                outputs = self.model(prev_image_batch, image_batch, next_image_batch)
+            else:
+                outputs = self.model(image_batch)
 
             # generate pseudo-labels from current model predictions.
             pseudo_labels = torch.argmax(outputs.detach(), dim=1).long()  # (B, H, W)

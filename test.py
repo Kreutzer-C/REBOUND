@@ -5,7 +5,8 @@ import torch
 import numpy as np
 
 from torchvision import transforms
-from dataloaders.dataset_CSANet import CSANet_SliceDataset, RandomGenerator_new
+from dataloaders.dataset_CSANet import TripleSliceDataset, SingleSliceDataset
+from dataloaders.augment import RandomGenerator_new
 from trainer.evaluator import Evaluator
 
 
@@ -27,8 +28,10 @@ def parse_args():
     # Model
     parser.add_argument('--model', '-m', type=str, default='CSANet',
                         help='Model name')
-    parser.add_argument('--model_config', type=str, default='./networks/R50_ViTB16_config.json',
-                        help='Model configuration file')
+    parser.add_argument('--is_25d', default=True,
+                        help='Whether the model is 2.5D (auto-determined according to model name)')
+    parser.add_argument('--model_config', type=str, default=None,
+                        help='Model configuration file (auto-generated if not provided)')
 
     # Checkpoint
     parser.add_argument('--exp_dir', '-ed', type=str, default=None,
@@ -74,12 +77,14 @@ def main():
     print("REBOUND - Testing")
     print("=" * 60)
 
+    # Step1: set random seed and device
     set_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f">>> Device: {device}")
     print(f">>> Dataset: {args.dataset}")
     print(f">>> Domain: {args.target}")
 
+    # Step2: set testing checkpoint
     if args.checkpoint is not None:
         assert os.path.exists(args.checkpoint), f"Checkpoint file does not exist: {args.checkpoint}"
     else:
@@ -95,16 +100,27 @@ def main():
             raise ValueError(f"Experiment directory does not exist: {args.exp_dir}")
     print(f">>> Loading checkpoint: {args.checkpoint}")
 
+    # Step3: set data directory
     args.data_dir = os.path.join(args.data_dir, args.dataset, args.processed_dir)
     assert os.path.exists(args.data_dir), f"Processed data directory does not exist: {args.data_dir}"
     print(f">>> Processed data directory: {args.data_dir}")
 
+    # Step4: set dataset metadata
     metadata_path = os.path.join(args.data_dir, 'metadata.json')
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     assert args.target in metadata['domains'], f"Target domain {args.target} not found in metadata: {metadata['domains']}"
     assert args.source in metadata['domains'], f"Source domain {args.source} not found in metadata: {metadata['domains']}"
-    
+
+    # Step5: set model configuration
+    if args.model_config is None:
+        if args.is_25d:
+            args.model_config = './networks/R50_ViTB16_config.json'
+        else:
+            args.model_config = './networks/unet_config.json'
+    print(f">>> Model configuration: {args.model_config}")
+
+    # Step6: set model
     if args.model == 'CSANet':
         from networks.csanet_modeling import CSANet
         model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
@@ -114,12 +130,17 @@ def main():
     elif args.model == 'CSANet_V3':
         from networks.csanet_modeling_v3 import CSANet_V3
         model = CSANet_V3(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    elif args.model == 'UNet':
+        from networks.unet_modeling import build_unet
+        args.is_25d = False
+        model = build_unet(args.model_config, args.img_size, metadata['num_classes']).to(device)
     else:
         raise ValueError(f"Invalid model: {args.model}")
     model.load_state_dict(torch.load(args.checkpoint, map_location=device)['model_state_dict'])
     print(f">>> Model: {args.model}")
     print(f">>> Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    # Step7: set save directory
     if args.save_dir is not None:
         os.makedirs(args.save_dir, exist_ok=True)
     else:
@@ -128,13 +149,23 @@ def main():
     print(f">>> Saving predictions to: {args.save_dir}")
 
     # BEGIN TESTING
-    db_test = CSANet_SliceDataset(
-        base_dir=args.data_dir,
-        domain_name=args.target,
-        split='test',
-        metadata=metadata,
-        transform=transforms.Compose(
-            [RandomGenerator_new(output_size=(args.img_size, args.img_size), phase='test')])
+    if args.is_25d:
+        db_test = TripleSliceDataset(
+            base_dir=args.data_dir,
+            domain_name=args.target,
+            split='test',
+            metadata=metadata,
+            transform=transforms.Compose(
+                [RandomGenerator_new(output_size=(args.img_size, args.img_size), phase='test')])
+        )
+    else:
+        db_test = SingleSliceDataset(
+            base_dir=args.data_dir,
+            domain_name=args.target,
+            split='test',
+            metadata=metadata,
+            transform=transforms.Compose(
+                [RandomGenerator_new(output_size=(args.img_size, args.img_size), phase='test')])
         )
     print(f">>> Number of test slices: {len(db_test)}")
 

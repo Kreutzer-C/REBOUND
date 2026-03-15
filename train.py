@@ -27,8 +27,10 @@ def parse_args():
     # Model
     parser.add_argument('--model', '-m', type=str, default='CSANet',
                         help='Model name')
-    parser.add_argument('--model_config', type=str, default='./networks/R50_ViTB16_config.json',
-                        help='Model configuration file')
+    parser.add_argument('--is_25d', default=True,
+                        help='Whether the model is 2.5D (auto-determined according to model name)')
+    parser.add_argument('--model_config', type=str, default=None,
+                        help='Model configuration file (auto-generated if not provided)')
     parser.add_argument('--source_pretrain_path', '-sp', type=str, default=None,
                         help='Source domain pretrained model path')
     
@@ -108,23 +110,36 @@ def main():
     print("REBOUND - Training")
     print("=" * 60)
 
+    # Step1: set random seed and device
     set_seed(args.seed)
     device = set_device(args.gpu_ids)
 
+    # Step2: set experiment name
     if args.exp is None:
         args.exp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     print(f">>> Experiment: {args.exp}")
 
+    # Step3: set data directory
     args.data_dir = os.path.join(args.data_dir, args.dataset, args.processed_dir)
     assert os.path.exists(args.data_dir), f"Processed data directory does not exist: {args.data_dir}"
     print(f">>> Processed data directory: {args.data_dir}")
 
+    # Step4: set dataset metadata
     metadata_path = os.path.join(args.data_dir, 'metadata.json')
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     assert args.source in metadata['domains'], f"Source domain {args.source} not found in metadata: {metadata['domains']}"
     assert args.target in metadata['domains'], f"Target domain {args.target} not found in metadata: {metadata['domains']}"
 
+    # Step5: set model configuration
+    if args.model_config is None:
+        if args.is_25d:
+            args.model_config = './networks/R50_ViTB16_config.json'
+        else:
+            args.model_config = './networks/unet_config.json'
+    print(f">>> Model configuration: {args.model_config}")
+
+    # Step6: set result directory
     if args.result_dir is None:
         args.result_dir = os.path.join('./results', args.dataset, f"{args.source}_to_{args.target}", args.exp)
     if os.path.exists(args.result_dir):
@@ -132,6 +147,7 @@ def main():
     os.makedirs(args.result_dir, exist_ok=True)
     print(f">>> Result directory: {args.result_dir}")
 
+    # Step7: set model
     if args.model == 'CSANet':
         from networks.csanet_modeling import CSANet
         model = CSANet(args.model_config, args.img_size, metadata['num_classes']).to(device)
@@ -141,6 +157,10 @@ def main():
     elif args.model == 'CSANet_V3':
         from networks.csanet_modeling_v3 import CSANet_V3
         model = CSANet_V3(args.model_config, args.img_size, metadata['num_classes']).to(device)
+    elif args.model == 'UNet':
+        from networks.unet_modeling import build_unet
+        args.is_25d = False
+        model = build_unet(args.model_config, args.img_size, metadata['num_classes']).to(device)
     else:
         raise ValueError(f"Invalid model: {args.model}")
     if torch.cuda.device_count() > 1:
@@ -148,6 +168,7 @@ def main():
     print(f">>> Model: {args.model}")
     print(f">>> Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    # Step8: start trainer
     if args.method == 'source_pretrain':
         from trainer import SourceTrainer
         trainer = SourceTrainer(args, metadata, model, device)
