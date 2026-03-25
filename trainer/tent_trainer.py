@@ -10,7 +10,7 @@ from torchvision import transforms
 from .base_trainer import BaseTrainer
 from utils.lr_schedulers import get_scheduler
 from utils.metrics import compute_dice_per_class
-from dataloaders.dataset_CSANet import TripleSliceDataset
+from dataloaders.dataset_CSANet import TripleSliceDataset, SingleSliceDataset
 from dataloaders.augment import RandomGenerator_new
 from .evaluator import Evaluator
 
@@ -47,6 +47,7 @@ class TentTrainer(BaseTrainer):
     # ------------------------------------------------------------------
 
     def train(self):
+        self.is_25d = self.args.is_25d
         # ----------------------------------------------------------
         # 1. Load source-pretrained weights
         # ----------------------------------------------------------
@@ -75,15 +76,24 @@ class TentTrainer(BaseTrainer):
         #    target-domain train split  →  entropy optimisation (no labels used)
         #    target-domain test  split  →  volume-level evaluation
         # ----------------------------------------------------------
-        db_train = TripleSliceDataset(
-            base_dir=self.args.data_dir,
-            domain_name=self.args.target,
-            split='train',
-            metadata=self.metadata,
-            transform=transforms.Compose(
-                [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')]
-            ),
-        )
+        if self.is_25d:
+            db_train = TripleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.target,
+                split='train',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+            )
+        else:
+            db_train = SingleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.target,
+                split='train',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='train')])
+            )
         self.logger.info(f"Number of target training slices: {len(db_train)}")
         self.train_loader = DataLoader(
             db_train,
@@ -93,14 +103,24 @@ class TentTrainer(BaseTrainer):
             pin_memory=True,
         )
 
-        self.db_val = TripleSliceDataset(
+        if self.is_25d:
+            self.db_val = TripleSliceDataset(
             base_dir=self.args.data_dir,
             domain_name=self.args.target,
             split='test',
             metadata=self.metadata,
             transform=transforms.Compose(
                 [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
-        )
+            )
+        else:
+            self.db_val = SingleSliceDataset(
+                base_dir=self.args.data_dir,
+                domain_name=self.args.target,
+                split='test',
+                metadata=self.metadata,
+                transform=transforms.Compose(
+                    [RandomGenerator_new(output_size=(self.args.img_size, self.args.img_size), phase='val')])
+            )
         self.logger.info(f"Number of val slices: {len(self.db_val)}")
 
         # ----------------------------------------------------------
@@ -209,12 +229,16 @@ class TentTrainer(BaseTrainer):
         for batch in pbar:
             image_batch      = batch['image'].to(self.device)
             label_batch      = batch['mask'].to(self.device)          # monitoring only
-            next_image_batch = batch['next_image'].to(self.device)
-            prev_image_batch = batch['prev_image'].to(self.device)
+            if self.is_25d:
+                next_image_batch = batch['next_image'].to(self.device)
+                prev_image_batch = batch['prev_image'].to(self.device)
 
             # Forward pass  →  logits (B, C, H, W)
             self.optimizer.zero_grad()
-            logits = self.model(prev_image_batch, image_batch, next_image_batch)
+            if self.is_25d:
+                logits = self.model(prev_image_batch, image_batch, next_image_batch)
+            else:
+                logits = self.model(image_batch)
 
             # Tent loss: mean per-pixel Shannon entropy of softmax predictions
             loss = self._entropy_loss(logits)
