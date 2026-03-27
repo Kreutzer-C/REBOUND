@@ -25,7 +25,7 @@ def parse_args():
                         help='Target domain name')
     
     # Model
-    parser.add_argument('--model', '-m', type=str, default='CSANet',
+    parser.add_argument('--model', '-m', type=str, default='UNet',
                         help='Model name')
     parser.add_argument('--is_25d', default=True,
                         help='Whether the model is 2.5D (auto-determined according to model name)')
@@ -66,6 +66,14 @@ def parse_args():
     parser.add_argument('--save_every', type=int, default=10,
                         help='Save checkpoint every N epochs')
     
+    # AdaMI-specific arguments
+    parser.add_argument('--adami_lambda', type=float, default=1.0,
+                        help='[AdaMI] Weight λ for the KL class-ratio regulariser. '
+                             'Class-ratio prior τ_e and class weights ν_k are '
+                             'automatically computed from the source-domain training masks.')
+    parser.add_argument('--adami_val_interval', type=int, default=5,
+                        help='[AdaMI] Run validation and save checkpoint every N training steps (default: 5)')
+
     # Device
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to use (cuda or cpu)')
@@ -184,6 +192,10 @@ def main():
     elif args.method == 'tent':
         from trainer import TentTrainer
         trainer = TentTrainer(args, metadata, model, device)
+        trainer.train()
+    elif args.method == 'adami':
+        from trainer import AdaMITrainer
+        trainer = AdaMITrainer(args, metadata, model, device)
         trainer.train()
     else:
         raise ValueError(f"Invalid method: {args.method}")

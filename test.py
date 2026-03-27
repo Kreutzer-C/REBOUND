@@ -26,7 +26,7 @@ def parse_args():
                         help='Target domain name')
     
     # Model
-    parser.add_argument('--model', '-m', type=str, default='CSANet',
+    parser.add_argument('--model', '-m', type=str, default='UNet',
                         help='Model name')
     parser.add_argument('--is_25d', default=True,
                         help='Whether the model is 2.5D (auto-determined according to model name)')
